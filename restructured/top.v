@@ -834,13 +834,18 @@ module top(
         output flashSSEL
     );
 
+    wire gdMISO;
+    wire flashsel;
     gameduino_main main(
         .vga_clk(vga_clk),
         .vga_red(vga_red), .vga_green(vga_green), .vga_blue(vga_blue), .vga_hsync_n(vga_hsync_n), .vga_vsync_n(vga_vsync_n),
-        .SCK(SCK), .MOSI(MOSI), .MISO(MISO), .SSEL(SSEL), .AUX(AUX),
+        .SCK(SCK), .MOSI(MOSI), .gdMISO(gdMISO), .SSEL(SSEL), .AUX(AUX),
         .AUDIOL(AUDIOL), .AUDIOR(AUDIOR),
-        .flashMOSI(flashMOSI), .flashMISO(flashMISO), .flashSCK(flashSCK), .flashSSEL(flashSSEL)
+        .flashMOSI(flashMOSI), .flashMISO(flashMISO), .flashSCK(flashSCK), .flashSSEL(flashSSEL),
+        .flashsel(flashsel)
     );
+
+    assign MISO = SSEL ? (flashsel ? flashMISO : 1'bz) : gdMISO;
 endmodule
 
 module gameduino_main(
@@ -853,7 +858,7 @@ module gameduino_main(
 
   input SCK,  // set to zero if not used
   input MOSI, // set to zero if not used
-  inout MISO,
+  output gdMISO,
   input SSEL, // set to zero if not used
   inout AUX,
   output AUDIOL,
@@ -862,8 +867,9 @@ module gameduino_main(
   output flashMOSI,
   input  flashMISO, // set to zero if not used
   output flashSCK,
-  output flashSSEL
+  output flashSSEL,
 
+  output flashsel
   );
 
 
@@ -892,8 +898,6 @@ module gameduino_main(
   wire [7:0] mem_data_rd3;
   wire [7:0] mem_data_rd4;
   wire [7:0] mem_data_rd5;
-
-  wire gdMISO;
 
   always @(posedge vga_clk)
   if (mem_rd)
@@ -924,9 +928,8 @@ module gameduino_main(
   wire pin2f = (pin2mode == 8'h46);
   wire pin2j = (pin2mode == 8'h4A);
 
-  wire flashsel = (AUX == 0) & pin2f;
+  assign flashsel = (AUX == 0) & pin2f;
 
-  assign MISO = SSEL ? (flashsel ? flashMISO : 1'bz) : gdMISO;
   // assign MISO = SSEL ? (1'bz ) : gdMISO;
   // PULLUP MISO_pullup(.O(MISO));
   // IOBUF MISO_iobuf(
