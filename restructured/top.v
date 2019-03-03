@@ -836,16 +836,21 @@ module top(
 
     wire gdMISO;
     wire flashsel;
+    wire AUX_in, AUX_out, AUX_tristate;    
     gameduino_main main(
         .vga_clk(vga_clk),
         .vga_red(vga_red), .vga_green(vga_green), .vga_blue(vga_blue), .vga_hsync_n(vga_hsync_n), .vga_vsync_n(vga_vsync_n),
-        .SCK(SCK), .MOSI(MOSI), .gdMISO(gdMISO), .SSEL(SSEL), .AUX(AUX),
+        .SCK(SCK), .MOSI(MOSI), .gdMISO(gdMISO), .SSEL(SSEL),
+        .AUX_in(AUX_in), .AUX_out(AUX_out), .AUX_tristate(AUX_tristate),
         .AUDIOL(AUDIOL), .AUDIOR(AUDIOR),
         .flashMOSI(flashMOSI), .flashMISO(flashMISO), .flashSCK(flashSCK), .flashSSEL(flashSSEL),
         .flashsel(flashsel)
     );
 
     assign MISO = SSEL ? (flashsel ? flashMISO : 1'bz) : gdMISO;
+
+    assign AUX = AUX_tristate ? 1'bz : AUX_out;
+    assign AUX_in = AUX;
 endmodule
 
 module gameduino_main(
@@ -860,7 +865,11 @@ module gameduino_main(
   input MOSI, // set to zero if not used
   output gdMISO,
   input SSEL, // set to zero if not used
-  inout AUX,
+
+  input AUX_in, // set to zero if not used
+  output AUX_out,
+  output AUX_tristate,
+
   output AUDIOL,
   output AUDIOR,
 
@@ -871,6 +880,7 @@ module gameduino_main(
 
   output flashsel
   );
+  wire AUX;
 
 
   wire mem_clk;
@@ -1882,6 +1892,8 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
   assign flashSCK = pin2j ? j1_flashSCK : SCK;
   assign flashSSEL = pin2f ? AUX : (pin2j ? j1_flashSSEL : 1);
 
-  assign AUX = (pin2j & (j1_p2_dir == 0)) ? j1_p2_o : 1'bz;
+  assign AUX_tristate = (pin2j & (j1_p2_dir == 0)) ? 0 : 1;
+  assign AUX_out = j1_p2_o;
+  assign AUX = AUX_tristate ? AUX_in : AUX_out;
 
 endmodule // top
