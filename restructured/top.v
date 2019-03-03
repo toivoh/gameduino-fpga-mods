@@ -811,6 +811,39 @@ end
 endmodule
 
 module top(
+        input vga_clk, // Twice the frequency of the original clka board clock
+
+        output [2:0] vga_red,
+        output [2:0] vga_green,
+        output [2:0] vga_blue,
+        output vga_hsync_n,
+        output vga_vsync_n,
+
+        input SCK,  // arduino 13
+        input MOSI, // arduino 11
+        inout MISO, // arduino 12
+        input SSEL, // arduino 9
+        inout AUX,  // arduino 2
+
+        output AUDIOL,
+        output AUDIOR,
+
+        output flashMOSI,
+        input  flashMISO,
+        output flashSCK,
+        output flashSSEL
+    );
+
+    gameduino_main main(
+        .vga_clk(vga_clk),
+        .vga_red(vga_red), .vga_green(vga_green), .vga_blue(vga_blue), .vga_hsync_n(vga_hsync_n), .vga_vsync_n(vga_vsync_n),
+        .SCK(SCK), .MOSI(MOSI), .MISO(MISO), .SSEL(SSEL), .AUX(AUX),
+        .AUDIOL(AUDIOL), .AUDIOR(AUDIOR),
+        .flashMOSI(flashMOSI), .flashMISO(flashMISO), .flashSCK(flashSCK), .flashSSEL(flashSSEL)
+    );
+endmodule
+
+module gameduino_main(
   input vga_clk, // Twice the frequency of the original clka board clock
   output [2:0] vga_red,
   output [2:0] vga_green,
@@ -818,16 +851,16 @@ module top(
   output vga_hsync_n,
   output vga_vsync_n,
 
-  input SCK,  // arduino 13
-  input MOSI, // arduino 11
-  inout MISO, // arduino 12
-  input SSEL, // arduino 9
-  inout AUX,  // arduino 2
+  input SCK,  // set to zero if not used
+  input MOSI, // set to zero if not used
+  inout MISO,
+  input SSEL, // set to zero if not used
+  inout AUX,
   output AUDIOL,
   output AUDIOR,
 
   output flashMOSI,
-  input  flashMISO,
+  input  flashMISO, // set to zero if not used
   output flashSCK,
   output flashSSEL
 
