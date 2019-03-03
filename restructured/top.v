@@ -836,20 +836,52 @@ module top(
 
     wire vga_hsync, vga_vsync;
     wire gdMISO;
-    wire flashsel;
-    wire AUX_in, AUX_out, AUX_tristate;    
-    gameduino_main main(
+    wire AUX_in, AUX_out, AUX_tristate;
+
+    wire [7:0] host_mem_data_wr;
+    wire [14:0] host_mem_w_addr;
+    wire [14:0] host_mem_r_addr;
+    wire host_mem_wr;
+    wire host_mem_rd;
+    wire [7:0] host_mem_data_rd;
+    wire mem_clk;
+
+    wire pin2f, pin2j;
+    wire j1_flashMOSI;
+    wire j1_flashSCK;
+    wire j1_flashSSEL;
+
+    gameduino_main gd(
         .vga_clk(vga_clk),
         .vga_red(vga_red), .vga_green(vga_green), .vga_blue(vga_blue),
         .vga_hsync(vga_hsync), .vga_vsync(vga_vsync),
-        .SCK(SCK), .MOSI(MOSI), .gdMISO(gdMISO), .SSEL(SSEL),
+        .mem_clk(mem_clk), .host_mem_data_wr(host_mem_data_wr), .host_mem_w_addr(host_mem_w_addr), .host_mem_r_addr(host_mem_r_addr), .host_mem_wr(host_mem_wr), .host_mem_rd(host_mem_rd), .host_mem_data_rd(host_mem_data_rd),
         .AUX_in(AUX_in), .AUX_out(AUX_out), .AUX_tristate(AUX_tristate),
         .AUDIOL(AUDIOL), .AUDIOR(AUDIOR),
-        .flashMOSI(flashMOSI), .flashMISO(flashMISO), .flashSCK(flashSCK), .flashSSEL(flashSSEL),
-        .flashsel(flashsel)
+        .pin2f(pin2f), .pin2j(pin2j), .j1_flashMOSI(j1_flashMOSI), .j1_flashSCK(j1_flashSCK), .j1_flashSSEL(j1_flashSSEL), .flashMISO(flashMISO)
     );
 
+    reg [7:0] latched_mem_data_rd;    
+    always @(posedge vga_clk) if (host_mem_rd) latched_mem_data_rd <= host_mem_data_rd;
+
+    SPI_memory spi1(
+        .clk(vga_clk),
+        .SCK(SCK), .MOSI(MOSI), .MISO(gdMISO), .SSEL(SSEL),
+        .raddr(host_mem_r_addr),
+        .waddr(host_mem_w_addr),
+        .data_w(host_mem_data_wr),
+        .data_r(latched_mem_data_rd),
+        .we(host_mem_wr),
+        .re(host_mem_rd),
+        .mem_clk(mem_clk)
+    );
+
+    wire flashsel = (AUX == 0) & pin2f;
     assign MISO = SSEL ? (flashsel ? flashMISO : 1'bz) : gdMISO;
+
+    assign flashMOSI = pin2j ? j1_flashMOSI : MOSI;
+    assign flashSCK = pin2j ? j1_flashSCK : SCK;
+    assign flashSSEL = pin2f ? AUX : (pin2j ? j1_flashSSEL : 1);
 
     assign AUX = AUX_tristate ? 1'bz : AUX_out;
     assign AUX_in = AUX;
@@ -867,10 +899,13 @@ module gameduino_main(
   output vga_vsync,
   output reg vga_active,
 
-  input SCK,  // set to zero if not used
-  input MOSI, // set to zero if not used
-  output gdMISO,
-  input SSEL, // set to zero if not used
+  input mem_clk, // Should probably be same as vga_clk
+  input host_mem_wr,             // set to zero if not used
+  input [14:0] host_mem_w_addr,  // set to zero if not used
+  input [7:0] host_mem_data_wr,  // set to zero if not used
+  input host_mem_rd,             // set to zero if not used
+  input [14:0] host_mem_r_addr,  // set to zero if not used
+  output [7:0] host_mem_data_rd,
 
   input AUX_in, // set to zero if not used
   output AUX_out,
@@ -879,26 +914,22 @@ module gameduino_main(
   output AUDIOL,
   output AUDIOR,
 
-  output flashMOSI,
-  input  flashMISO, // set to zero if not used
-  output flashSCK,
-  output flashSSEL,
+  output pin2f,
+  output pin2j,
+  output reg j1_flashMOSI,
+  output reg j1_flashSCK,
+  output reg j1_flashSSEL,
+  input flashMISO  // set to zero if not used
 
-  output flashsel
   );
   wire AUX;
 
 
-  wire mem_clk;
-  wire [7:0] host_mem_data_wr;
   reg [7:0] mem_data_rd;
-  reg [7:0] latched_mem_data_rd;
+  assign host_mem_data_rd = mem_data_rd;
+
   wire [14:0] mem_w_addr;   // Combined write address
   wire [14:0] mem_r_addr;   // Combined read address
-  wire [14:0] host_mem_w_addr;
-  wire [14:0] host_mem_r_addr;
-  wire host_mem_wr;
-  wire mem_rd;
 
   wire [15:0] j1_insn;
   wire [12:0] j1_insn_addr;
@@ -915,21 +946,7 @@ module gameduino_main(
   wire [7:0] mem_data_rd4;
   wire [7:0] mem_data_rd5;
 
-  always @(posedge vga_clk)
-  if (mem_rd)
-    latched_mem_data_rd <= mem_data_rd;
-
-  SPI_memory spi1(
-    .clk(vga_clk),
-    .SCK(SCK), .MOSI(MOSI), .MISO(gdMISO), .SSEL(SSEL),
-    .raddr(host_mem_r_addr),
-    .waddr(host_mem_w_addr),
-    .data_w(host_mem_data_wr),
-    .data_r(latched_mem_data_rd),
-    .we(host_mem_wr),
-    .re(mem_rd),
-    .mem_clk(mem_clk));
-  wire host_busy = host_mem_wr | mem_rd;
+  wire host_busy = host_mem_wr | host_mem_rd;
   wire mem_wr =            host_busy ? host_mem_wr : j1_mem_wr;
   wire [7:0] mem_data_wr = host_busy ? host_mem_data_wr : j1_mem_dout;
   wire [14:0] mem_addr =   host_busy ? (host_mem_wr ? host_mem_w_addr : host_mem_r_addr) : j1_mem_addr;
@@ -941,10 +958,8 @@ module gameduino_main(
   reg [6:0] modvoice = 64;
   reg [14:0] bg_color;
   reg [7:0] pin2mode = 0;
-  wire pin2f = (pin2mode == 8'h46);
-  wire pin2j = (pin2mode == 8'h4A);
-
-  assign flashsel = (AUX == 0) & pin2f;
+  assign pin2f = (pin2mode == 8'h46);
+  assign pin2j = (pin2mode == 8'h4A);
 
   // assign MISO = SSEL ? (1'bz ) : gdMISO;
   // PULLUP MISO_pullup(.O(MISO));
@@ -1844,9 +1859,6 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
   end
 
   wire [0:7] j1_mem_dout_be = j1_mem_dout;
-  reg j1_flashMOSI;
-  reg j1_flashSCK;
-  reg j1_flashSSEL;
 
   always @(posedge vga_clk)
   begin
@@ -1893,10 +1905,6 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
     .wea((mem_w_addr[0] == 1) & jinsn_wr),
     .ad(mem_data_wr),
     .ao(j1insnh_read));
-
-  assign flashMOSI = pin2j ? j1_flashMOSI : MOSI;
-  assign flashSCK = pin2j ? j1_flashSCK : SCK;
-  assign flashSSEL = pin2f ? AUX : (pin2j ? j1_flashSSEL : 1);
 
   assign AUX_tristate = (pin2j & (j1_p2_dir == 0)) ? 0 : 1;
   assign AUX_out = j1_p2_o;
