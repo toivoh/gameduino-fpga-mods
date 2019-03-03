@@ -15,8 +15,9 @@ This project was created by James Bowman <jamesb@excamera.com>. I strongly recom
 What's in this repository
 -------------------------
 This repository is focussed on the Gameduino FPGA code, and making it usable in broader context. There's
-- a description of what I've figured out about the design below, and
-- some modifications of the orignal code intended to make it easier to reuse, [described here](restructured/README.md) (code in the `restructured/` directory)
+- a description of what I've figured out about the design below,
+- some modifications of the orignal code intended to make it easier to reuse, [described here](restructured/README.md) (code in the `restructured/` directory), and
+- a mod that demonstrates how one can unify the tile and sprite palettes to make room for an attribute map with 4 bits per tile position (see [here](mods/attrmap/README.md))
 
 The copy that I used as a basis for this repository was taken from [https://github.com/Godzil/gameduino].
 

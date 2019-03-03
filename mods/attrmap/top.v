@@ -1086,7 +1086,8 @@ module gameduino_main(
 
   wire [10:0] column = comp_workcnt + scrollx;
   wire [10:0] row    = yy[10:1] + scrolly;
-  wire [7:0] glyph;
+  wire [7:0] glyph; // tile index of current tile
+  wire [3:0] attr; // attributes of current tile
 
   wire [11:0] picaddr = {row[8:3], column[8:3]};
 
@@ -1118,32 +1119,37 @@ module gameduino_main(
     .dib(mem_data_wr), .dob(mem_data_rd1),             .web(mem_wr), .enb(en_chr), .clkb(mem_clk), .addrb(mem_addr));
 
   reg [7:0] _glyph;
-  always @(posedge vga_clk)
+  reg [3:0] _attr;
+  reg [11:0] _picaddr;
+  always @(posedge vga_clk) begin
     _glyph <= glyph;
+    _attr <= attr;
+    _picaddr <= picaddr[0];
+  end
 
   wire [4:0] bg_r;
   wire [4:0] bg_g;
   wire [4:0] bg_b;
 
-  wire en_pal = (mem_addr[14:11] == 4'b0100);
+  wire en_attr = (mem_addr[14:11] == 4'b0100); // reuse memory mapping of sprite palette
+  wire charpal_read_enable = (comp_workcnt < 400 + 2); // Let characters read the palette if we're still drawing them (and sprites otherwise)
+  wire [9:0] charpal_addr = {_attr, charout}; // Concatenate attribute and pixel bits to get palette index
   wire [15:0] char_matte;
-  RAM_PAL charpalette(
-    .DIA(mem_data_wr),
-    .WEA(mem_wr),
-    .ENA(en_pal),
-    .CLKA(mem_clk),
-    .ADDRA(mem_addr),
-    .DOA(mem_data_rd2),
-    .SSRA(0),
 
-    .DIB(0),
-    .WEB(0),
-    .ENB(1),
-    .CLKB(vga_clk),
-    .ADDRB({_glyph, charout}),
-    .DOB(char_matte),
-    .SSRB(0)
-  );
+  reg [7:0] mem_data_rd2_reg;
+  assign mem_data_rd2 = mem_data_rd2_reg;
+  reg [7:0] attr_read_reg;
+
+  // Attribute map: 64x64 x 4 bits  
+  (* ram_style = "block" *) reg [7:0] attribute_map[0:(64*64/2)-1];
+  always @(posedge vga_clk) begin
+    if (mem_wr && en_attr) attribute_map[mem_addr] <= mem_data_wr;
+    mem_data_rd2_reg <= attribute_map[mem_addr];
+
+    attr_read_reg <= attribute_map[picaddr >> 1]; // Read one byte from attribute_map
+  end
+  assign attr = _picaddr[0] ? attr_read_reg[7:4] : attr_read_reg[3:0]; // Pick low or high nibble from readout
+
   // wire [4:0] bg_mix_r = bg_color[14:10] + char_matte[14:10];
   // wire [4:0] bg_mix_g = bg_color[9:5]   + char_matte[9:5];
   // wire [4:0] bg_mix_b = bg_color[4:0]   + char_matte[4:0];
@@ -1392,10 +1398,12 @@ module gameduino_main(
     .WEB(0),
     .ENB(1),
     .CLKB(vga_clk),
-    .ADDRB(sprpal_addr),
+    // Use color index from characters or sprites depending on charpal_read_enable
+    .ADDRB(charpal_read_enable ? charpal_addr : sprpal_addr),
     .DOB(sprpal_data),
     .SSRB(0)
   );
+  assign char_matte = sprpal_data;
   wire [13:0] sprimg_readaddr;
   wire [7:0] sprimg_data;
   wire en_sprimg = (mem_addr[14] == 1'b1);
