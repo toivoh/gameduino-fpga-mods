@@ -811,7 +811,7 @@ end
 endmodule
 
 module top(
-  input clka,
+  input vga_clk, // Twice the frequency of the original clka board clock
   output [2:0] vga_red,
   output [2:0] vga_green,
   output [2:0] vga_blue,
@@ -844,9 +844,6 @@ module top(
   wire [14:0] host_mem_r_addr;
   wire host_mem_wr;
   wire mem_rd;
-
-  wire vga_clk;
-  ck_div #(.DIV_BY(2), .MULT_BY(4)) vga_ck_gen(.ck_in(clka), .ck_out(vga_clk));
 
   wire [15:0] j1_insn;
   wire [12:0] j1_insn_addr;
