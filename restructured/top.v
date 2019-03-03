@@ -834,12 +834,14 @@ module top(
         output flashSSEL
     );
 
+    wire vga_hsync, vga_vsync;
     wire gdMISO;
     wire flashsel;
     wire AUX_in, AUX_out, AUX_tristate;    
     gameduino_main main(
         .vga_clk(vga_clk),
-        .vga_red(vga_red), .vga_green(vga_green), .vga_blue(vga_blue), .vga_hsync_n(vga_hsync_n), .vga_vsync_n(vga_vsync_n),
+        .vga_red(vga_red), .vga_green(vga_green), .vga_blue(vga_blue),
+        .vga_hsync(vga_hsync), .vga_vsync(vga_vsync),
         .SCK(SCK), .MOSI(MOSI), .gdMISO(gdMISO), .SSEL(SSEL),
         .AUX_in(AUX_in), .AUX_out(AUX_out), .AUX_tristate(AUX_tristate),
         .AUDIOL(AUDIOL), .AUDIOR(AUDIOR),
@@ -851,6 +853,9 @@ module top(
 
     assign AUX = AUX_tristate ? 1'bz : AUX_out;
     assign AUX_in = AUX;
+
+    assign vga_hsync_n = !vga_hsync;
+    assign vga_vsync_n = !vga_vsync;
 endmodule
 
 module gameduino_main(
@@ -858,8 +863,9 @@ module gameduino_main(
   output [2:0] vga_red,
   output [2:0] vga_green,
   output [2:0] vga_blue,
-  output vga_hsync_n,
-  output vga_vsync_n,
+  output vga_hsync,
+  output vga_vsync,
+  output reg vga_active,
 
   input SCK,  // set to zero if not used
   input MOSI, // set to zero if not used
@@ -1051,7 +1057,7 @@ module gameduino_main(
 // `define HSTART (53 + 120 + 61)
 `define HSTART 0
 
-  reg vga_HS, vga_VS, vga_active;
+  reg vga_HS, vga_VS;
   always @(posedge vga_clk)
   begin
     vga_HS <= ((800 + 61) <= CounterX) & (CounterX < (800 + 61 + 120));
@@ -1610,8 +1616,8 @@ module gameduino_main(
   assign vga_red =    vga_active ? f_r : 0;
   assign vga_green =  vga_active ? f_g : 0;
   assign vga_blue =   vga_active ? f_b : 0;
-  assign vga_hsync_n = ~vga_HS;
-  assign vga_vsync_n = ~vga_VS;
+  assign vga_hsync = vga_HS;
+  assign vga_vsync = vga_VS;
 
   /*
   An 18-bit counter, multiplied by the frequency gives a single bit
