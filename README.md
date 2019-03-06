@@ -18,8 +18,8 @@ This repository is focussed on the Gameduino FPGA code, and making it usable in 
 - a description of what I've figured out about the design below,
 - some modifications of the orignal code intended to make it easier to reuse, [described here](restructured/README.md) (code in the `restructured/` directory), and
 - Gameduino mods:
-    - one that demonstrates how one can unify the tile and sprite palettes to make room for an attribute map with 4 bits per tile position (see [mods/attrmap/README.md])
-    - one that adds additional video modes (see [mods/video_modes/README.md])
+    - one that demonstrates how one can unify the tile and sprite palettes to make room for an attribute map with 4 bits per tile position (see [mods/attrmap/](mods/attrmap/))
+    - one that adds additional video modes (see [mods/video_modes/](mods/video_modes/))
 
 The copy that I used as a basis for this repository was taken from [https://github.com/Godzil/gameduino].
 

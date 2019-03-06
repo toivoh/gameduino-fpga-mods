@@ -30,4 +30,4 @@ This is also a considerably bigger change than the attrmap mod. A lot of it is c
 But there's also assumptions that had to be changed in various places about screen width, number of bits needed to represent x coordinates, etc,
 and a number of smaller features needed to support the 640x240 mode.
 
-A short demonstration video of the mod can be seen at [https://youtu.be/OuJSkkX6KHA].
+A short demonstration video of the mod can be seen at https://youtu.be/OuJSkkX6KHA
