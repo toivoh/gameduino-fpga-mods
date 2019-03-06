@@ -924,6 +924,69 @@ module gameduino_main(
   );
   wire AUX;
 
+  localparam USE_AUDIO = 0;
+  localparam WIDE_LINE_BUFFER = 1; // Reserve space for 640 pixels per line?
+  localparam ENABLE_TILEMAP_128x32 = 1; // Support 128x32 tile map mode?
+  localparam TILEMAP_128x32_TWO_BLOCKS = 0; // Treat 128x32 tile map as two 64x32 blocks side by side?
+
+  localparam X_BITS = 10; // 9 in the original
+  localparam VGA_X_BITS = 11;
+  localparam VGA_Y_BITS = 10;
+
+  reg [1:0] graphics_mode = 0;
+
+  wire vga_1280x480 = graphics_mode[0]; 
+  wire widen_output = graphics_mode[1];
+  wire tilemap_128x32 = ENABLE_TILEMAP_128x32 && (vga_1280x480 && !widen_output);
+
+  // Original 800x600 mode:
+  //localparam VGA_MODE1_WIDTH = 800, VGA_MODE1_XTOT = 1040 + 1, VGA_MODE1_XFP = 60, VGA_MODE1_XSYNC = 120;
+  //localparam VGA_MODE1_HEIGHT = 600, VGA_MODE1_YTOT = 666, VGA_MODE1_YFP = 38, VGA_MODE1_YSYNC = 6;
+
+  // Standard 800x600@72Hz:
+  localparam VGA_MODE1_WIDTH = 800, VGA_MODE1_XTOT = 1040, VGA_MODE1_XFP = 60, VGA_MODE1_XSYNC = 120;
+  localparam VGA_MODE1_HEIGHT = 600, VGA_MODE1_YTOT = 666, VGA_MODE1_YFP = 37, VGA_MODE1_YSYNC = 6;
+  localparam VGA_MODE1_YBP = VGA_MODE1_YTOT - (VGA_MODE1_HEIGHT + VGA_MODE1_YFP + VGA_MODE1_YSYNC);
+
+  localparam VGA_MODE2_WIDTH = 2*640, VGA_MODE2_XTOT = 2*800, VGA_MODE2_XFP = 2*16, VGA_MODE2_XSYNC = 2*96;
+  localparam VGA_MODE2_HEIGHT = 480, VGA_MODE2_YTOT = 525, VGA_MODE2_YFP = 10, VGA_MODE2_YSYNC = 2;
+  localparam VGA_MODE2_YBP = VGA_MODE2_YTOT - (VGA_MODE2_HEIGHT + VGA_MODE2_YFP + VGA_MODE2_YSYNC);
+
+  reg [VGA_X_BITS-1:0] vga_width = VGA_MODE1_WIDTH, vga_xtot_minus_1 = VGA_MODE1_XTOT - 1, vga_hs_x0, vga_hs_x1;
+  reg [VGA_Y_BITS-1:0] vga_height = VGA_MODE1_HEIGHT, vga_ytot_minus_1, vga_vs_y0, vga_vs_y1, vga_active_y0, vga_active_y1; 
+
+  always @(posedge vga_clk) begin
+    // Only change mode parameters at certain times?
+    if (vga_1280x480) begin
+      vga_width <= VGA_MODE2_WIDTH;
+      vga_xtot_minus_1 <= VGA_MODE2_XTOT - 1;
+      vga_hs_x0 <= VGA_MODE2_WIDTH + VGA_MODE2_XFP;
+      vga_hs_x1 <= VGA_MODE2_WIDTH + VGA_MODE2_XFP + VGA_MODE2_XSYNC;
+
+      vga_height <= VGA_MODE2_HEIGHT;
+      vga_ytot_minus_1 <= VGA_MODE2_YTOT - 1;
+      vga_vs_y0 <= VGA_MODE2_YFP - 3;
+      vga_vs_y1 <= VGA_MODE2_YFP - 3 + VGA_MODE2_YSYNC;
+      vga_active_y0 <= VGA_MODE2_YFP - 3 + VGA_MODE2_YSYNC + VGA_MODE2_YBP;
+      vga_active_y1 <= VGA_MODE2_YFP - 3 + VGA_MODE2_YSYNC + VGA_MODE2_YBP + VGA_MODE2_HEIGHT;
+    end else begin
+      vga_width <= VGA_MODE1_WIDTH;
+      vga_xtot_minus_1 <= VGA_MODE1_XTOT - 1;
+      vga_hs_x0 <= VGA_MODE1_WIDTH + VGA_MODE1_XFP;
+      vga_hs_x1 <= VGA_MODE1_WIDTH + VGA_MODE1_XFP + VGA_MODE1_XSYNC;
+
+      vga_height <= VGA_MODE1_HEIGHT;
+      vga_ytot_minus_1 <= VGA_MODE1_YTOT - 1;
+      vga_vs_y0 <= VGA_MODE1_YFP - 3;
+      vga_vs_y1 <= VGA_MODE1_YFP - 3 + VGA_MODE1_YSYNC;
+      vga_active_y0 <= VGA_MODE1_YFP - 3 + VGA_MODE1_YSYNC + VGA_MODE1_YBP;
+      vga_active_y1 <= VGA_MODE1_YFP - 3 + VGA_MODE1_YSYNC + VGA_MODE1_YBP + VGA_MODE1_HEIGHT;      
+    end
+  end
+
+  reg [VGA_X_BITS-1-1:0] render_width = VGA_MODE1_WIDTH >> 1;
+  always @(posedge vga_clk) render_width <= (vga_width >> widen_output) >> 1;
+
 
   reg [7:0] mem_data_rd;
   assign host_mem_data_rd = mem_data_rd;
@@ -971,7 +1034,7 @@ module gameduino_main(
 
   // user-visible registers
   reg [7:0] frames;
-  reg [8:0] scrollx;
+  reg [X_BITS-1:0] scrollx;
   reg [8:0] scrolly;
   reg jkmode;
 
@@ -1024,18 +1087,18 @@ module gameduino_main(
     .bo(palette4_data[15:8]));
 
   // Generate CounterX and CounterY
-  // A single line is 1040 clocks.  Line pair is 2080 clocks.
+  // A single line is 1040 (vga_xtot_minus_1 + 1) clocks.  Line pair is 2080 clocks.
 
   reg [10:0] CounterX;
   reg [9:0] CounterY;
-  wire CounterXmaxed = (CounterX==1040);
+  wire CounterXmaxed = (CounterX == vga_xtot_minus_1);
 
   always @(posedge vga_clk)
   if(CounterXmaxed)
     CounterX <= 0;
   else
     CounterX <= CounterX + 1;
-  wire lastline = (CounterY == 665);
+  wire lastline = (CounterY == vga_ytot_minus_1);
   wire [9:0] _CounterY = lastline ? 0 : (CounterY + 1);
 
   always @(posedge vga_clk)
@@ -1046,16 +1109,19 @@ module gameduino_main(
   end
 
   reg [12:0] comp_workcnt; // Compositor work address
-  reg comp_workcnt_lt_400;
+  wire [12:0] comp_workcnt_plus_1 = comp_workcnt + 1;
+  reg [4:0] comp_workcnt_lt_render_width_plus; // comp_workcnt_lt_render_width_plus[n] = (comp_workcnt < render_width + n) 
+
   always @(posedge vga_clk)
   begin
     if (CounterXmaxed & (CounterY[0] == 0)) begin
       comp_workcnt <= 0;
-      comp_workcnt_lt_400 <= 1;
+      comp_workcnt_lt_render_width_plus <= 1; // comp_workcnt < render_width + any nonnegative number 
     end else begin
-      comp_workcnt <= comp_workcnt + 1;
-      if (comp_workcnt == 399)
-        comp_workcnt_lt_400 <= 0;
+      comp_workcnt <= comp_workcnt_plus_1;
+      if (comp_workcnt_plus_1 == render_width)
+        comp_workcnt_lt_render_width_plus[0] <= 0;
+      comp_workcnt_lt_render_width_plus[4:1] <= comp_workcnt_lt_render_width_plus[3:0];
     end
   end
 
@@ -1075,21 +1141,22 @@ module gameduino_main(
   reg vga_HS, vga_VS;
   always @(posedge vga_clk)
   begin
-    vga_HS <= ((800 + 61) <= CounterX) & (CounterX < (800 + 61 + 120));
-    vga_VS <= (35 <= CounterY) & (CounterY < (35 + 6));
-    vga_active = ((`HSTART + 1) <= CounterX) & (CounterX < (`HSTART + 1 + 800)) & ((35 + 6 + 21) < CounterY) & (CounterY <= (35 + 6 + 21 + 600));
+    vga_HS <= (vga_hs_x0 <= CounterX) & (CounterX < vga_hs_x1);
+    vga_VS <= (vga_vs_y0 <= CounterY) & (CounterY < vga_vs_y1);
+    vga_active = ((`HSTART) <= CounterX) & (CounterX < (`HSTART + vga_width)) & (vga_active_y0 <= CounterY) & (CounterY < vga_active_y1);
   end
 
   wire [10:0] xx = (CounterX - `HSTART);
   wire [10:0] xx_1 = (CounterX - `HSTART + 1);
-  wire [10:0] yy = (CounterY + 2 - (35 + 6 + 21 + 1));    // yy range 0-665
+  wire [10:0] yy = (CounterY + 2 - vga_active_y0);    // yy range 0-665
 
   wire [10:0] column = comp_workcnt + scrollx;
   wire [10:0] row    = yy[10:1] + scrolly;
   wire [7:0] glyph;
 
-  wire [11:0] picaddr = {row[8:3], column[8:3]};
-
+  wire [11:0] picaddr;
+  if (TILEMAP_128x32_TWO_BLOCKS) assign picaddr = tilemap_128x32 ? {column[9], row[7:3], column[8:3]} : {row[8:3], column[8:3]};
+  else assign picaddr = tilemap_128x32 ? {row[7:3], column[9:3]} : {row[8:3], column[8:3]};
 
   wire en_pic = (mem_addr[14:12] == 0);
   RAM_PICTURE picture(
@@ -1154,7 +1221,7 @@ module gameduino_main(
 
   // Collision detection RAM is readable during vblank
   // writes coll_d to coll_w_addr during render
-  wire coll_rd = (yy >= 600); // 1 means reading
+  wire coll_rd = (yy >= vga_height); // 1 means reading
   wire [7:0] coll_d;
   wire [7:0] coll_w_addr;
   wire coll_we;
@@ -1202,7 +1269,7 @@ module gameduino_main(
     11'h002: mem_data_rd_reg <= frames;
     11'h003: mem_data_rd_reg <= coll_rd;  // called VBLANK, but really "is coll readable?"
     11'h004: mem_data_rd_reg <= scrollx[7:0];
-    11'h005: mem_data_rd_reg <= scrollx[8];
+    11'h005: mem_data_rd_reg <= scrollx[8 +: X_BITS-8];
     11'h006: mem_data_rd_reg <= scrolly[7:0];
     11'h007: mem_data_rd_reg <= scrolly[8];
     11'h008: mem_data_rd_reg <= jkmode;
@@ -1217,6 +1284,9 @@ module gameduino_main(
     11'h012: mem_data_rd_reg <= sample_r[7:0];
     11'h013: mem_data_rd_reg <= sample_r[15:8];
     11'h014: mem_data_rd_reg <= modvoice;
+
+    11'h018: mem_data_rd_reg <= graphics_mode;
+
     11'h01e: mem_data_rd_reg <= public_yy[7:0];
     11'h01f: mem_data_rd_reg <= {screenshot_done, 6'b000000, public_yy[8]};
 
@@ -1297,7 +1367,7 @@ module gameduino_main(
     if (mem_wr & mem_w_addr[14:11] == 5)
       casex (mem_w_addr[10:0])
       11'h004: scrollx[7:0]   <= mem_data_wr;
-      11'h005: scrollx[8]     <= mem_data_wr;
+      11'h005: scrollx[8 +: X_BITS-8] <= mem_data_wr;
       11'h006: scrolly[7:0]   <= mem_data_wr;
       11'h007: scrolly[8]     <= mem_data_wr;
       11'h008: jkmode         <= mem_data_wr;
@@ -1312,6 +1382,8 @@ module gameduino_main(
       11'h012: sample_r[7:0]  <= mem_data_wr;
       11'h013: sample_r[15:8] <= mem_data_wr;
       11'h014: modvoice       <= mem_data_wr;
+
+      11'h018: graphics_mode  <= mem_data_wr;
 
       11'h01e: screenshot_yy[7:0] <= mem_data_wr;
       11'h01f: begin screenshot_primed <= mem_data_wr[7];
@@ -1436,7 +1508,10 @@ module gameduino_main(
       end
   end
   wire [31:0] s1_out = sprval_data;
-  wire [8:0] s1_y_offset = yy[9:1] - s1_out[24:16];
+
+  wire [8:0] s1_sprite_y = tilemap_128x32 ? {s1_out[23:16] >= 256-16, s1_out[23:16]} : s1_out[24:16];
+
+  wire [8:0] s1_y_offset = yy[9:1] - s1_sprite_y;
   wire s1_visible = (spr_disable == 0) & (s1_y_offset[8:4] == 0);
   wire s1_valid = s1_consider & s1_visible;
   reg [8:0] s1_id;
@@ -1469,7 +1544,7 @@ module gameduino_main(
   assign s3_read = (s3_state == 15);
   always @(posedge vga_clk)
   begin
-    if (comp_workcnt < 403)
+    if (comp_workcnt_lt_render_width_plus[3])
       s3_state <= 16;
     else if (s3_state == 16) begin
       if (s2_valid) begin
@@ -1487,8 +1562,11 @@ module gameduino_main(
   wire [3:0] ready = (s2_out[9] ? s3_prev_state : s3_yoffset) ^ {4{s2_out[11]}};
   assign sprimg_readaddr = {s2_out[30:25], ready, readx};
   wire [7:0] s3_out = sprimg_data;
-  wire [8:0] s3_compaddr = s2_out[8:0] + s3_state;
-  wire s3_valid = (s3_state != 16) & (s3_compaddr < 400);
+
+  wire [X_BITS-1:0] s3_sprite_x = tilemap_128x32 ? {s2_out[24], s2_out[8:0]} : {s2_out[8:0] >= 512 - 16, s2_out[8:0]};
+
+  wire [X_BITS-1:0] s3_compaddr = s3_sprite_x + s3_state;  
+  wire s3_valid = (s3_state != 16) & (s3_compaddr < render_width);
   reg [8:0] s3_id;
   reg s3_jk;
   always @(posedge vga_clk)
@@ -1503,7 +1581,7 @@ module gameduino_main(
   reg [15:0] sprpal4;
   reg [15:0] sprpal16;
   assign sprpal_addr = {s3_pal[1:0], s3_out};
-  reg [8:0] s4_compaddr;
+  reg [X_BITS-1:0] s4_compaddr;
   reg s4_valid;
   reg [8:0] s4_id;
   reg s4_jk;
@@ -1533,10 +1611,10 @@ module gameduino_main(
   // ff is impossible and means empty.
 
   wire coll_scrub = (yy == 0) & (comp_workcnt < 256);
-  wire [8:0] occ_addr = comp_workcnt_lt_400 ? comp_workcnt : s4_compaddr;
-  wire [8:0] occ_d = comp_workcnt_lt_400 ? 9'hff : {s4_jk, s4_id[7:0]};
+  wire [X_BITS-1:0] occ_addr = comp_workcnt_lt_render_width_plus[0] ? comp_workcnt : s4_compaddr;
+  wire [8:0] occ_d = comp_workcnt_lt_render_width_plus[0] ? 9'hff : {s4_jk, s4_id[7:0]};
   wire [8:0] oldocc;
-  wire occ_w = comp_workcnt_lt_400 | sprite_write;
+  wire occ_w = comp_workcnt_lt_render_width_plus[0] | sprite_write;
   ram400x9s occ(.o(oldocc), .a(occ_addr), .d(occ_d), .wclk(vga_clk), .we(occ_w));
   assign coll_d = coll_scrub ? 8'hff : oldocc[7:0];
   assign coll_w_addr = coll_scrub ? comp_workcnt : s4_id[7:0];
@@ -1544,14 +1622,14 @@ module gameduino_main(
   // jkmode=1 and JK's differ, allow write
   wire overwriting = (oldocc[7:0] != 8'hff);
   wire jkpass = (jkmode == 0) | (oldocc[8] ^ s4_jk);
-  assign coll_we = coll_scrub | ((403 <= comp_workcnt) & sprite_write & overwriting & jkpass);
+  assign coll_we = coll_scrub | (!comp_workcnt_lt_render_width_plus[3] & sprite_write & overwriting & jkpass);
 
   // Composite
 
   wire comp_read = yy[1];   // which block is reading
-  wire [8:0] comp_scanout = xx[9:1];
-  wire [8:0] comp_write = (comp_workcnt < 403) ? (comp_workcnt - 3) : s4_compaddr;
-  wire comp_part1 = (3 <= comp_workcnt) & (comp_workcnt < 403);
+  wire [X_BITS-1:0] comp_scanout = (xx >> widen_output) >> 1;
+  wire [X_BITS-1:0] comp_write = comp_workcnt_lt_render_width_plus[3] ? (comp_workcnt - 3) : s4_compaddr;
+  wire comp_part1 = (3 <= comp_workcnt) & comp_workcnt_lt_render_width_plus[3];
 `ifdef NELLY
   wire [14:0] comp_out0;
   wire [14:0] comp_out1;
@@ -1561,7 +1639,7 @@ module gameduino_main(
     .WEA(comp_read == 1 & (comp_part1 | sprite_write)),
     .ENA(1),
     .CLKA(vga_clk),
-    .ADDRA({1'b0, (comp_read == 0) ? comp_scanout : comp_write[8:0]}),
+    .ADDRA({1'b0, (comp_read == 0) ? comp_scanout[8:0] : comp_write[8:0]}),
     .DOA(comp_out0),
     .SSRA(0),
 
@@ -1570,7 +1648,7 @@ module gameduino_main(
     .WEB(comp_read == 0 & (comp_part1 | sprite_write)),
     .ENB(1),
     .CLKB(vga_clk),
-    .ADDRB({1'b1, (comp_read == 1) ? comp_scanout : comp_write[8:0]}),
+    .ADDRB({1'b1, (comp_read == 1) ? comp_scanout[8:0] : comp_write[8:0]}),
     .DOB(comp_out1),
     .SSRB(0)
   );
@@ -1579,13 +1657,16 @@ module gameduino_main(
   wire ss = screenshot_primed & screenshot_done;  // screenshot readout mode
   wire [15:0] screenshot_rdHL;
   wire [14:0] comp_out;
+  wire [14:0] comp_out_bram;
+  wire composer_we = !ss & (comp_part1 | sprite_write);
+  wire [14:0] comp_in = comp_part1 ? char_final : s4_out; 
   // Port A is the write, or read when screenshot is ready
   // Port B is scanout
   RAMB16_S18_S18
   composer(
     .DIPA(0),
-    .DIA(comp_part1 ? char_final : s4_out),
-    .WEA(!ss & (comp_part1 | sprite_write)),
+    .DIA(comp_in),
+    .WEA(composer_we && !comp_write[9]),
     .ENA(1),
     .CLKA(vga_clk),
     .ADDRA(ss ? {screenshot_yy[0], mem_r_addr[9:1]} : {comp_read, comp_write[8:0]}),
@@ -1597,17 +1678,34 @@ module gameduino_main(
     .WEB(0),
     .ENB(1),
     .CLKB(vga_clk),
-    .ADDRB({!comp_read, comp_scanout}),
-    .DOB(comp_out),
+    .ADDRB({!comp_read, comp_scanout[8:0]}),
+    .DOB(comp_out_bram),
     .SSRB(0)
   );
   assign screenshot_rd = mem_r_addr[0] ? screenshot_rdHL[15:8] : screenshot_rdHL[7:0];
+
+  if (WIDE_LINE_BUFFER) begin
+    reg [14:0] comp_out_d;
+    (* ram_style = "distributed" *) reg [14:0] composer_2[0:2*128-1];
+    always @(posedge vga_clk) begin
+      if (composer_we && comp_write[9]) composer_2[{comp_read, comp_write[6:0]}] <= comp_in;
+      comp_out_d <= composer_2[{!comp_read, comp_scanout[6:0]}];
+    end
+
+    reg _comp_scanout9;
+    always @(posedge vga_clk) _comp_scanout9 <= comp_scanout[9];
+
+    assign comp_out = _comp_scanout9 ? comp_out_d : comp_out_bram;
+  end else begin
+    assign comp_out = comp_out_bram;
+  end
+
 `endif
   assign {bg_r,bg_g,bg_b} = comp_out;
 
   // Figure out from above signals when composite completes
   // by detecting pipeline idle
-  wire composite_complete = (comp_workcnt > 403) & (s1_count == 256) & !s1_consider & !s2_valid & (s3_state == 16) & !s4_valid;
+  wire composite_complete = !comp_workcnt_lt_render_width_plus[4] & (s1_count == 256) & !s1_consider & !s2_valid & (s3_state == 16) & !s4_valid;
 
   // Signal generation
 
@@ -1619,7 +1717,7 @@ module gameduino_main(
   wire [1:0] dith;
   // 0 2
   // 3 1
-  assign dith = {(xx[0]^yy[0]), yy[0]};
+  assign dith = {(xx[widen_output]^yy[0]), yy[0]};
   wire [5:0] dith_r = (bg_r + dith);
   wire [5:0] dith_g = (bg_g + dith);
   wire [5:0] dith_b = (bg_b + dith);
@@ -1634,6 +1732,7 @@ module gameduino_main(
   assign vga_hsync = vga_HS;
   assign vga_vsync = vga_VS;
 
+  if (USE_AUDIO) begin
   /*
   An 18-bit counter, multiplied by the frequency gives a single bit
   pulse that advances the voice's wave counter.
@@ -1783,6 +1882,10 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
   dac ldac(AUDIOL, ulvalue, vga_clk, 0);
   dac rdac(AUDIOR, urvalue, vga_clk, 0);
 `endif
+  end else begin
+    assign AUDIOL = 0;
+    assign AUDIOR = 0;
+  end // if (USE_AUDIO)
 
   reg [2:0] busyhh;
   always @(posedge vga_clk) busyhh = { busyhh[1:0], host_busy };
@@ -1821,7 +1924,7 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
   wire j1_wr;
 
   reg [8:0] YYLINE;
-  wire [9:0] yyline = (CounterY + 4 - (35 + 6 + 21 + 1));
+  wire [9:0] yyline = (CounterY + 4 - vga_active_y0);
   always @(posedge vga_clk)
   begin
     // if (xx == 400)
