@@ -32,10 +32,12 @@ and a number of smaller features needed to support the 640x240 mode.
 
 A short demonstration video of the mod can be seen at https://youtu.be/OuJSkkX6KHA
 
-Version 2
----------
-The `v2/` directory contains an updated version of the mod:
-- Based on new version of restructured/top.v, with the original clka input
-- Split dual ported composer_2 RAM into two single ported RAMs (one line being read and one written)
-- Take out the whole audio functionality when USE_AUDIO is off - missed removing the audio registers in the first verison
-- Improve compatibility of conditional instantiation code
+Version history
+---------------
+- Original mod in this directory, updates in `v2/`, `v3/`
+- `v2/` updates:
+    - Based on new version of `restructured/top.v`, with the original `clka` input
+    - Split dual ported `composer_2` RAM into two single ported RAMs (one line being read and one written) for reduced logic usage
+    - Take out the whole audio functionality when `USE_AUDIO` is off - missed removing the audio registers in the first verison
+    - Improve compatibility of conditional instantiation code
+- `v3/`: Add option `USE_PCM_AUDIO` (default on) to use just the PCM part of the audio functionality
