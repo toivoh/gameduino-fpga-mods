@@ -21,6 +21,7 @@ This repository is focussed on the Gameduino FPGA code, and making it usable in 
     - one that demonstrates how one can unify the tile and sprite palettes to make room for an attribute map with 4 bits per tile position (see [mods/attrmap/](mods/attrmap/))
     - one that adds additional video modes (see [mods/video_modes/](mods/video_modes/))
     - one that allows to use 512 simultaneous background tiles instead of 256 (see [mods/512_tiles/](mods/512_tiles/))
+    - one that allows 4/16 color sprites to use many more palettes, sharing the main sprite palette between all sprites (see [mods/sprite_palettes/](mods/sprite_palettes/))
 
 The copy that I used as a basis for this repository was taken from [https://github.com/Godzil/gameduino].
 
