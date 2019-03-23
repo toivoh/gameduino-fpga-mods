@@ -937,6 +937,9 @@ module gameduino_main(
 //`define USE_AUDIO
 `define USE_PCM_AUDIO
 
+// Include support for original RAM_PIC format with one byte per entry?
+`define SUPPORT_8BIT_RAM_PIC
+
 `ifdef USE_AUDIO
 `define USE_PCM_AUDIO
 `endif
@@ -944,9 +947,15 @@ module gameduino_main(
 // Options: parameters
 // -------------------
 
+  // Memory map start adresses, in 2k blocks
+  localparam [3:0] MEM_PAGE_ADDR_RAM_PIC = 0; // Must be even
+  localparam [3:0] MEM_PAGE_ADDR_RAM_CHR = 2; // Must be even
+
+  // Alternate configuration to place RAM_PIC right before RAM_PAL, for 6k of contiguous tile map space  
+  //localparam [3:0] MEM_PAGE_ADDR_RAM_PIC = 2; // Must be even
+  //localparam [3:0] MEM_PAGE_ADDR_RAM_CHR = 0; // Must be even
+
   localparam WIDE_LINE_BUFFER = 1; // Reserve space for 640 pixels per line?
-  localparam ENABLE_TILEMAP_128x32 = 1; // Support 128x32 tile map mode?
-  localparam TILEMAP_128x32_TWO_BLOCKS = 0; // Treat 128x32 tile map as two 64x32 blocks side by side?
   localparam ROT_FORMAT_HVD = 0; // Interpret the sprite's rot field as (horizontal, vertical, diagonal flip) instead of (v, h, d)?
 
 // Constants
@@ -960,7 +969,7 @@ module gameduino_main(
 
   wire vga_1280x480 = graphics_mode[0]; 
   wire widen_output = graphics_mode[1];
-  wire tilemap_128x32 = ENABLE_TILEMAP_128x32 && (vga_1280x480 && !widen_output);
+  wire sprite_10bit_x = (vga_1280x480 && !widen_output); // Steal one bit from sprites' y position to get a 10 bit x position?
 
   // Original 800x600 mode:
   //localparam VGA_MODE1_WIDTH = 800, VGA_MODE1_XTOT = 1040 + 1, VGA_MODE1_XFP = 60, VGA_MODE1_XSYNC = 120;
@@ -1028,7 +1037,7 @@ module gameduino_main(
   wire [7:0] j1insnh_read;
   wire [8:0] mem_data_rd0; // picture
   wire [7:0] mem_data_rd1;
-  wire [7:0] mem_data_rd2;
+  wire [8:0] mem_data_rd2; // pal = last part of picture
   wire [8:0] mem_data_rd3; // sprval
   wire [7:0] mem_data_rd4;
   wire [7:0] mem_data_rd5;
@@ -1089,12 +1098,29 @@ module gameduino_main(
   reg [8:0] scrolly;
   reg jkmode;
 
+  reg [7:0] pic_mode = {1'b0, 2'd2, 2'd2, 3'd0};
+  wire [2:0] pic_base = pic_mode[2:0];
+  wire [1:0] pic_width_mode = pic_mode[4:3];
+  wire [1:0] pic_height_mode = pic_mode[6:5];
+`ifdef SUPPORT_8BIT_RAM_PIC
+  wire pic_with_attr = pic_mode[7];
+`else
+  wire pic_with_attr = 1;
+`endif  
+
   reg [6:0] chr_base = (7 << 12) >> 8;
   //reg [6:0] sprimg_base = 0;
 
   reg [3:0] spr_palrot_mask;
-  reg [7:0] spr_palbase_4;
-  reg [7:0] spr_palbase_16;
+`ifdef SUPPORT_8BIT_RAM_PIC
+  reg [7:0] chr_attr_mask = 'hff;
+`else
+  wire [7:0] chr_attr_mask = 'hff;
+`endif  
+
+  reg [7:0] spr_palbase_4 = 0;
+  reg [7:0] spr_palbase_16 = 252;
+  reg [7:0] chr_palbase = 0;
 
   // Generate CounterX and CounterY
   // A single line is 1040 (vga_xtot_minus_1 + 1) clocks.  Line pair is 2080 clocks.
@@ -1160,66 +1186,113 @@ module gameduino_main(
   wire [10:0] xx_1 = (CounterX - `HSTART + 1);
   wire [10:0] yy = (CounterY + 2 - vga_active_y0);    // yy range 0-665
 
-  wire [10:0] column = comp_workcnt + scrollx;
-  wire [10:0] row    = yy[10:1] + scrolly;
-  wire [8:0] glyph;
+  // column0, row0: before wrapping to tile map width/height
+  wire [10:0] column0 = comp_workcnt + scrollx;
+  wire [9:0] row0     = yy[10:1] + scrolly;
 
-  wire [11:0] picaddr;
-  generate
-    if (TILEMAP_128x32_TWO_BLOCKS) assign picaddr = tilemap_128x32 ? {column[9], row[7:3], column[8:3]} : {row[8:3], column[8:3]};
-    else assign picaddr = tilemap_128x32 ? {row[7:3], column[9:3]} : {row[8:3], column[8:3]};
-  endgenerate
+  // Wrap column: subtract wrap_width once if column0 >= wrap_width 
+  reg [9:0] wrap_width;
+  always @* begin
+    case (pic_width_mode[1:0])
+      2'd0: wrap_width = 8*32;
+      2'd1: wrap_width = 8*48;
+      2'd2: wrap_width = 8*64;
+      2'd3: wrap_width = 8*96;
+      endcase
+  end
+  wire [10:0] column1 = column0 - wrap_width;
+  wire [9:0] column = column1[10] ? column0 : column1;
 
-  wire en_pic = (mem_addr[14:12] == 0);
-  RAM_PICTURE9_primitive picture(
-    .dia(0), 
-	 .doa(glyph), 
-	 .wea(0),     
-	 .ena(1), 
-	 .clka(vga_clk), 
-	 .addra(picaddr),
-    .dib(mem_data_wr), 
-	 .dob(mem_data_rd0),      
-	 .web(mem_wr), 
-	 .enb(en_pic), 
-	 .clkb(mem_clk),
-	 .addrb(mem_addr)
-	 );
+  // Wrap row: subtract wrap_height once if column0 >= wrap_width
+  wire [9:0] wrap_height = pic_height_mode[0] == 0 ? 8*32 : 8*48; // Not used if pic_height_mode[1] == 1 (wrap height = 64)
+  wire [9:0] row1 = row0 - wrap_height;
+  wire [8:0] row = (pic_height_mode[1] | row1[9]) ? row0 : row1;
 
-  reg [2:0] _column;
-  always @(posedge vga_clk)
-    _column = column;
+  // # Calculate tile map address from wrapped coordinates
+  // Extract tile map coordinates
+  wire [6:0] pic_col = column >> 3;
+  wire [5:0] pic_row = row >> 3;
 
-  wire [14:0] chars_readaddr = {glyph, row[2:0], _column[2], ~_column[1:0]};
-  wire [1:0] charout;
+  // Multiply pic_row by 2 or 3
+  wire [7:0] pic_row_x2x3 = {1'b0, pic_row, 1'b0} + (pic_width_mode[0] ? pic_row : 0); // pic_row*2 or pic_row*3, depending on pic_width_mode[0]
+  // Multiply pic_row by 16 or 32
+  wire [11:0] pic_row_x_pic_width = pic_width_mode[1] ? pic_row_x2x3 << 5 : pic_row_x2x3 << 4;
 
-  reg [8:0] _glyph;
-  always @(posedge vga_clk)
-    _glyph <= glyph;
+  // picaddr = pic_row*wrap_width + pic_col + pic_base*512
+  wire [12:0] picaddr = pic_row_x_pic_width + pic_col + (pic_base << 9);
 
-  wire [4:0] bg_r;
-  wire [4:0] bg_g;
-  wire [4:0] bg_b;
+  reg _picaddr0;
+  always @(posedge vga_clk) _picaddr0 <= picaddr;  
 
-  wire en_pal = (mem_addr[14:11] == 4'b0100);
-  wire [15:0] char_matte;
-  RAM_PAL charpalette(
+  wire en_pic = (mem_addr[14:12] == (MEM_PAGE_ADDR_RAM_PIC >> 1));
+  wire [17:0] pic_out, pic_out1, pic_out2;
+
+  wire [11:0] picaddr_final = pic_with_attr ? picaddr : picaddr >> 1;
+  wire [9:0] glyph;
+
+  RAM_PICTURE18_primitive picture(
+    .dib(0),
+	 .dob(pic_out1),
+	 .web(0),
+	 .enb(1),
+	 .clkb(vga_clk),
+	 .addrb(picaddr_final),
+    .dia(mem_data_wr),
+	 .doa(mem_data_rd0),      
+	 .wea(mem_wr),
+	 .ena(en_pic),
+	 .clka(mem_clk),
+	 .addra(mem_addr)
+  );
+
+  wire en_pic2 = (mem_addr[14:11] == 4'b0100);
+  RAMB16_S9_S18 picture2 (
+    .DIPA(mem_data_wr[8]),
     .DIA(mem_data_wr),
     .WEA(mem_wr),
-    .ENA(en_pal),
+    .ENA(en_pic2),
     .CLKA(mem_clk),
     .ADDRA(mem_addr),
     .DOA(mem_data_rd2),
     .SSRA(0),
 
+    .DIPB(0),
     .DIB(0),
     .WEB(0),
     .ENB(1),
     .CLKB(vga_clk),
-    .ADDRB({_glyph, charout}),
-    .DOB(char_matte),
+    .ADDRB(picaddr_final),
+    .DOPB(pic_out2[17:16]),
+    .DOB(pic_out2[15:0]),
     .SSRB(0)
   );
+
+  reg _picaddr_final_msb;
+  always @(posedge vga_clk) _picaddr_final_msb <= picaddr_final[11];
+
+  assign pic_out = _picaddr_final_msb ? pic_out2 : pic_out1;
+
+  assign glyph = pic_with_attr ? pic_out[9:0] : ((_picaddr0 == 0) ? {pic_out[16], pic_out[7:0]} : {pic_out[17], pic_out[15:8]});
+
+  reg [2:0] _column;
+  always @(posedge vga_clk)
+    _column = column;
+
+  wire [15:0] chars_readaddr = {glyph, row[2:0], _column[2], ~_column[1:0]};
+  wire [1:0] charout;
+
+  wire [7:0] attr = pic_with_attr ? pic_out[17:10] : glyph & chr_attr_mask;
+
+  reg [7:0] _attr;
+  always @(posedge vga_clk) _attr <= attr;
+
+  wire [4:0] bg_r;
+  wire [4:0] bg_g;
+  wire [4:0] bg_b;
+
+  wire [15:0] char_matte;
+  wire [9:0] charpal_addr = {_attr + chr_palbase, charout};
+
   // wire [4:0] bg_mix_r = bg_color[14:10] + char_matte[14:10];
   // wire [4:0] bg_mix_g = bg_color[9:5]   + char_matte[9:5];
   // wire [4:0] bg_mix_b = bg_color[4:0]   + char_matte[4:0];
@@ -1301,6 +1374,7 @@ module gameduino_main(
 `endif
 
     11'h018: mem_data_rd_reg <= graphics_mode;
+    11'h019: mem_data_rd_reg <= pic_mode;
 
     11'h01e: mem_data_rd_reg <= public_yy[7:0];
     11'h01f: mem_data_rd_reg <= {screenshot_done, 6'b000000, public_yy[8]};
@@ -1308,12 +1382,16 @@ module gameduino_main(
     11'h0c0: mem_data_rd_reg <= chr_base[6:0];
     //11'h0c1: mem_data_rd_reg <= sprimg_base[6:0];
     11'h0c2: mem_data_rd_reg <= spr_palrot_mask;
+`ifdef SUPPORT_8BIT_RAM_PIC
+    11'h0c3: mem_data_rd_reg <= chr_attr_mask;
+`endif    
 
     11'h0c8: mem_data_rd_reg <= ninth_read_bits;
     11'h0c9: mem_data_rd_reg <= ninth_write_bits;
 
     11'h0d0: mem_data_rd_reg <= spr_palbase_4;
     11'h0d1: mem_data_rd_reg <= spr_palbase_16;
+    11'h0d3: mem_data_rd_reg <= chr_palbase;
 
     11'b001xxxxxxxx:
       mem_data_rd_reg <= coll_rd ? coll_o : 8'hff;
@@ -1414,6 +1492,7 @@ module gameduino_main(
 `endif
 
       11'h018: graphics_mode  <= mem_data_wr;
+      11'h019: pic_mode       <= mem_data_wr;
 
       11'h01e: screenshot_yy[7:0] <= mem_data_wr;
       11'h01f: begin screenshot_primed <= mem_data_wr[7];
@@ -1422,12 +1501,16 @@ module gameduino_main(
       11'h0c0: chr_base[6:0]     <= mem_data_wr;
       //11'h0c1: sprimg_base[6:0]  <= mem_data_wr;
       11'h0c2: spr_palrot_mask <= mem_data_wr;
+`ifdef SUPPORT_8BIT_RAM_PIC
+      11'h0c3: chr_attr_mask <= mem_data_wr;
+`endif      
 
       //11'h0c8: ninth_read_bits   <= mem_data_wr; // handled below
       11'h0c9: ninth_write_bits  <= mem_data_wr;
 
       11'h0d0: spr_palbase_4 <= mem_data_wr;
       11'h0d1: spr_palbase_16 <= mem_data_wr;
+      11'h0d3: chr_palbase <= mem_data_wr;
       endcase
     end else begin
       // When writing from host to a non-register, ninth_write_bits[0] is used to fill in the 9th bit; shift it out
@@ -1450,10 +1533,10 @@ module gameduino_main(
   always @*
   begin
     case (mem_addr[14:11]) // 2K pages
-    4'h0: mem_data_rd <= mem_data_rd0;  // pic
-    4'h1: mem_data_rd <= mem_data_rd0;
-    4'h2: mem_data_rd <= mem_data_rd1;  // chr
-    4'h3: mem_data_rd <= mem_data_rd1;
+    MEM_PAGE_ADDR_RAM_PIC + 4'h0: mem_data_rd <= mem_data_rd0;  // pic
+    MEM_PAGE_ADDR_RAM_PIC + 4'h1: mem_data_rd <= mem_data_rd0;
+    MEM_PAGE_ADDR_RAM_CHR + 4'h0: mem_data_rd <= mem_data_rd1;  // chr
+    MEM_PAGE_ADDR_RAM_CHR + 4'h1: mem_data_rd <= mem_data_rd1;
     4'h4: mem_data_rd <= mem_data_rd2;  // pal
     4'h5: mem_data_rd <= mem_data_rd_reg;
     4'h6: mem_data_rd <= mem_data_rd3;  // sprval
@@ -1503,6 +1586,9 @@ module gameduino_main(
   wire [9:0] sprpal_addr;
   wire [15:0] sprpal_data;
   wire en_sprpal = (mem_addr[14:11] == 4'b0111);
+
+  wire [9:0] pal_addr = comp_workcnt_lt_render_width_plus[2] ? charpal_addr : sprpal_addr;
+
   RAM_SPRPAL sprpal(
     .DIA(mem_data_wr),
     .WEA(mem_wr),
@@ -1516,16 +1602,18 @@ module gameduino_main(
     .WEB(0),
     .ENB(1),
     .CLKB(vga_clk),
-    .ADDRB(sprpal_addr),
+    .ADDRB(pal_addr),
     .DOB(sprpal_data),
     .SSRB(0)
   );
+  assign char_matte = sprpal_data;
+
   wire [13:0] sprimg_readaddr;
 
   //wire [14:0] pixel_readaddr = comp_workcnt_lt_render_width_plus[1] ? (chars_readaddr >> 2) + {chr_base, 8'b0} : sprimg_readaddr + {sprimg_base, 8'b0};
   wire [14:0] pixel_readaddr = comp_workcnt_lt_render_width_plus[1] ? (chars_readaddr >> 2) + {chr_base, 8'b0} : sprimg_readaddr;
 
-  wire en_chr = (mem_addr[14:12] == 1);
+  wire en_chr = (mem_addr[14:12] == (MEM_PAGE_ADDR_RAM_CHR >> 1));
   wire [7:0] chars_out;
   RAM_CHR8 chars(
     .dia(0), .doa(chars_out), .wea(0), .ena(1), .clka(vga_clk), .addra(pixel_readaddr),
@@ -1584,7 +1672,7 @@ module gameduino_main(
   end
   wire [35:0] s1_out = sprval_data;
 
-  wire [8:0] s1_sprite_y = tilemap_128x32 ? {s1_out[23:16] >= 256-16, s1_out[23:16]} : s1_out[24:16];
+  wire [8:0] s1_sprite_y = sprite_10bit_x ? {s1_out[23:16] >= 256-16, s1_out[23:16]} : s1_out[24:16];
 
   wire [8:0] s1_y_offset = yy[9:1] - s1_sprite_y;
   wire s1_visible = (spr_disable == 0) & (s1_y_offset[8:4] == 0);
@@ -1651,7 +1739,7 @@ module gameduino_main(
   assign sprimg_readaddr = {s2_out[30:25], ready, readx};
   wire [7:0] s3_out = sprimg_data;
 
-  wire [X_BITS-1:0] s3_sprite_x = tilemap_128x32 ? {s2_out[24], s2_out[8:0]} : {s2_out[8:0] >= 512 - 16, s2_out[8:0]};
+  wire [X_BITS-1:0] s3_sprite_x = sprite_10bit_x ? {s2_out[24], s2_out[8:0]} : {s2_out[8:0] >= 512 - 16, s2_out[8:0]};
 
   wire [X_BITS-1:0] s3_compaddr = s3_sprite_x + s3_state;  
   wire s3_valid = (s3_state != 16) & (s3_compaddr < render_width);
