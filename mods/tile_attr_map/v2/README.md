@@ -1,5 +1,5 @@
-Mod: Tile map with interleaved attributes
-=========================================
+Mod: Tile map with interleaved attributes v.2
+=============================================
 The original Gameduino has space for 1024 palette colors for tiles (and 1024 for sprites), but each of the 256 graphic tiles is tied to its own 4 color palette. This mod adds a mode with two bytes per tile map entry; enough to specify both a tile index and a palette independently (and to choose between more tiles as well).
 
 Apart from the new attribute mode (with two bytes per tile map entry), the mod
@@ -9,7 +9,7 @@ Apart from the new attribute mode (with two bytes per tile map entry), the mod
 
 A short demo video can be found at https://youtu.be/RMPqGM-1orw
 
-This mod is written on top of the [sprite palettes mod](../sprite_palettes/). It is built on the features of the [512 tiles mod](../512_tiles/), which unifies the tile and sprite graphics RAMs to be able to display more than 256 simultaneous tiles (and adds the ninth bit interface used for the extra attribute bits).
+This mod is written on top of the [sprite palettes mod](../sprite_palettes/). It is built on the features of the [512 tiles mod](../512_tiles/), which unifies the tile and sprite graphics RAMs to be able to display more than 256 simultaneous tiles (and adds the ninth bit interface used for the extra tile index bits).
 
 New registers
 -------------
@@ -26,10 +26,9 @@ Tile map entry format
 ---------------------
 When attribute mode is enabled, the format of a tile map entry is
 
-    ee pppppptt tttttttt
+    ee pppppppp tttttttt
 
-with two ninth bits `ee` (see the [512 tiles mod](../512_tiles/)) and two bytes. This contains a 10 bit tile index `tttttttttt` and an 8 bit palette index `eepppppp`.
-(The tile map entry format is updated in [version 2](v2/).)
+with two ninth bits `ee` (see the [512 tiles mod](../512_tiles/)), one attribute byte, and one tile index byte. This contains a 10 bit tile index `eetttttttt` and an 8 bit palette index `pppppppp`.
 The color index of a tile pixel is computed as
 
     (palette_index + CHR_PALBASE)*4 + pixel_value
@@ -89,10 +88,11 @@ This mod makes some changes to preserve the appearance of the splash screen desp
 Additional options
 ------------------
 The mod also introduces two synthesis time options:
+- `ATTR_NINTH_PAL_BITS`: when set to one, use the tile map entry format `pp pppppptt tttttttt` instead, as in v1 of the mod
 - `SUPPORT_8BIT_RAM_PIC`: disable if the original mode with one byte per tile map entry is not needed. This saves a bit more than 20 slices in the xc3s200a FPGA.
 - The positions of `RAM_PIC` and `RAM_CHR` can be swapped in the memory map, which makes the tile map accessible as 6 kB of contiguous memory (see the parameters `MEM_PAGE_ADDR_RAM_PIC` and `MEM_PAGE_ADDR_RAM_CHR` in the source)
 
 Version history
 ---------------
-- Original mod in this directory, updates in `v2/`
-- [`v2/`](v2/): Change the tile map entry attribute format to `tt pppppppp tttttttt`, with the option `ATTR_NINTH_PAL_BITS=1` to change it back
+- Original mod in [mods/tile_attr_map](..), updates in `v2/`
+- `v2/`: Change the tile map entry attribute format to `tt pppppppp tttttttt`, with the option `ATTR_NINTH_PAL_BITS=1` to change it back
