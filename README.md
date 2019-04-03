@@ -24,6 +24,7 @@ This repository is focussed on the Gameduino FPGA code, and making it usable in 
     - one that adds additional video modes (see [mods/video_modes/](mods/video_modes/))
     - one that allows to use 512 simultaneous background tiles instead of 256 (see [mods/512_tiles/](mods/512_tiles/))
     - one that allows 4/16 color sprites to use many more palettes, sharing the main sprite palette between all sprites (see [mods/sprite_palettes/](mods/sprite_palettes/))
+- bug fixes for the Gameduino's j0 coprocessor (see [bugfixes/j0/](bugfixes/j0/))
 
 The copy that I used as a basis for this repository was taken from [https://github.com/Godzil/gameduino].
 
@@ -76,8 +77,11 @@ One pixel can be written to the line buffer in each cycle. The process to render
 - There's one sub-pipeline for background rendering and one for sprite rendering
 - First, the background pipeline takes 400 cycles to fill the line buffer with tile graphics
 - Then, the sprite pipeline takes over and begins to draw (the current line for) one sprite at a time into the line buffer, skipping over sprites that don't overlap with the current line
+    - Sprites on the current line take 17 cycles to draw
+    - Sprites that are on the current line are put into a 16 entry FIFO while the background and previous sprites are drawn, so sprite filtering can often be overlapped with drawing
+      (but only one sprite can be filtered per cycle)
 
-Each line is 1040 cycles including blanking, so the pipeline has almost 2080 cycles to draw one line. After subtracting 400 pixels for the background, there's time for at most 1680 pixels for sprites, or 105 sprites. (The documentation says max 96 sprites per line, and there's probably some overhead that keeps it from reaching up to 105.)
+Each line is 1040 cycles including blanking, so the pipeline has almost 2080 cycles to draw one line. After subtracting 400 pixels for the background, there's time for at most 1680 pixels for sprites, or 97 sprites. (The documentation says max 96 sprites per line, and there's probably some overhead that keeps it from reaching 97.)
 
 Both sub-pipelines have about 4 stages, going through three memories in turn: (names of related signals in the code in parentheses)
 - The background pipeline passes through the memories for (in order)
