@@ -84,6 +84,8 @@ module j0(
       endcase
   end
 
+  wire is_load = !insn[15] && (st0sel == 5'b01100); // _st0 <= mem_din;
+
   wire is_alu = (insn[15:13] == 3'b011);
   wire is_lit = (insn[15]);
 
@@ -141,7 +143,15 @@ module j0(
         _pc = pc_plus_1;
   end
 
-  assign insn_addr = pause ? pc : _pc;
+  // Loads from block RAM need a pause cycle before they execute to output
+  // the desired memory address to mem_addr one cycle before the data is needed.
+  // It's ok if we were paused externally -- top will make sure to pause for
+  // (more than) one additional cycle after each memory access from host.
+  reg last_paused = 0;
+  // Just make sure that we pause for one cycle before executing any load instruction
+  wire paused = pause || (is_load && !last_paused);
+
+  assign insn_addr = paused ? pc : _pc;
   always @(posedge sys_clk_i)
   begin
     if (sys_rst_i) begin
@@ -149,7 +159,7 @@ module j0(
       dsp <= 0;
       st0 <= 0;
       rsp <= 0;
-    end else if (!pause) begin
+    end else if (!paused) begin
       pc <= _pc;
       dsp <= _dsp;
       st0 <= _st0;
@@ -159,6 +169,7 @@ module j0(
       if (rstkW)
         rstack[_rsp] = rstkD;
     end
+    last_paused <= paused;
   end
 
 endmodule // j1
