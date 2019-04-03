@@ -91,7 +91,7 @@ module j0(
 
   // assign mem_rd = (is_alu & (insn[11:8] == 4'hc));
   assign mem_rd = (st0sel == 5'hc);
-  assign mem_wr = is_alu & insn[5];
+  wire _mem_wr = is_alu & insn[5];
   assign mem_addr = st0;
   assign mem_dout = st1;
 
@@ -150,6 +150,10 @@ module j0(
   reg last_paused = 0;
   // Just make sure that we pause for one cycle before executing any load instruction
   wire paused = pause || (is_load && !last_paused);
+
+  // Never write to memory when in reset, or paused. We'll get a cycle to do the write
+  // after the pause, and we don't know if we have the internal memory bus during pause anyway. 
+  assign mem_wr = _mem_wr && !paused && !sys_rst_i;
 
   assign insn_addr = paused ? pc : _pc;
   always @(posedge sys_clk_i)
