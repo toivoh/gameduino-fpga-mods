@@ -48,3 +48,8 @@ The memory map of Pixel RAM covers 32k before it wraps, with `RAM_CHR` repeated 
     28k RAM_CHR, 4k (repeated)
 
 This is the memory map that the base address register `CHR_BASE` relates to; tile graphics are read starting from address `CHR_BASE*256`. The initial value of `CHR_BASE` is `0x70`, making `CHR_BASE*256` = 28k. This default causes tile ids 0-255 to read their graphics from the last repetition of `RAM_CHR`, while tile ids 256-511 wrap around to read graphics from the first 4k of `RAM_SPRIMG`.
+
+Version history
+---------------
+- v1: Initial version (in this directory)
+- `v2/`: Based on v4 of [mods/video_modes](../video_modes)
