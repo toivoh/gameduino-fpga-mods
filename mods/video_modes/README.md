@@ -41,3 +41,4 @@ Version history
     - Take out the whole audio functionality when `USE_AUDIO` is off - missed removing the audio registers in the first verison
     - Improve compatibility of conditional instantiation code
 - `v3/`: Add option `USE_PCM_AUDIO` (default on) to use just the PCM part of the audio functionality
+- `v4/`: Fix bug that cut down the number of sprites that could be drawn on the same line in 640x240 and 320x240 mode (one liner)
