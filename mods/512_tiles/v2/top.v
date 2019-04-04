@@ -998,8 +998,9 @@ module gameduino_main(
   always @(posedge vga_clk) render_width <= (vga_width >> widen_output) >> 1;
 
 
-  reg [7:0] mem_data_rd;
+  reg [8:0] mem_data_rd;
   assign host_mem_data_rd = mem_data_rd;
+
 
   wire [14:0] mem_w_addr;   // Combined write address
   wire [14:0] mem_r_addr;   // Combined read address
@@ -1012,19 +1013,41 @@ module gameduino_main(
 
   wire [7:0] j1insnl_read;
   wire [7:0] j1insnh_read;
-  wire [7:0] mem_data_rd0;
+  wire [8:0] mem_data_rd0; // picture
   wire [7:0] mem_data_rd1;
   wire [7:0] mem_data_rd2;
   wire [7:0] mem_data_rd3;
   wire [7:0] mem_data_rd4;
   wire [7:0] mem_data_rd5;
 
+  // ninth bit access registers
+  reg [7:0] ninth_read_bits = 0;
+  reg [7:0] ninth_write_bits = 0;
+
   wire host_busy = host_mem_wr | host_mem_rd;
   wire mem_wr =            host_busy ? host_mem_wr : j1_mem_wr;
-  wire [7:0] mem_data_wr = host_busy ? host_mem_data_wr : j1_mem_dout;
+  wire [8:0] mem_data_wr = host_busy ? {ninth_write_bits[0], host_mem_data_wr} : j1_mem_dout[8:0];
   wire [14:0] mem_addr =   host_busy ? (host_mem_wr ? host_mem_w_addr : host_mem_r_addr) : j1_mem_addr;
   assign mem_w_addr =      host_busy ? host_mem_w_addr : j1_mem_addr;
   assign mem_r_addr =      host_busy ? host_mem_r_addr : j1_mem_addr;
+
+  // Used to make sure that ninth_read_bits is only updated once in a read cycle
+  reg _host_mem_rd_ram, __host_mem_rd_ram;
+  always @(posedge vga_clk) begin
+    _host_mem_rd_ram <= host_mem_rd && (host_mem_r_addr[14:11] != 5);
+    __host_mem_rd_ram <= _host_mem_rd_ram;
+  end
+
+  // Used to make sure that ninth_read_bits and ninth_write_bits are only updated once in one read/write. Are these needed? 
+  reg [14:0] _mem_addr;
+  wire mem_addr_changed = (mem_addr != _mem_addr);
+  reg _mem_addr_changed;
+  reg _host_mem_wr;
+  always @(posedge vga_clk) begin
+    _mem_addr <= mem_addr;
+    _mem_addr_changed <= mem_addr_changed;
+    _host_mem_wr <= host_mem_wr;
+  end
 
 `ifdef USE_PCM_AUDIO
   reg signed [15:0] sample_l;
@@ -1052,6 +1075,9 @@ module gameduino_main(
   reg [X_BITS-1:0] scrollx;
   reg [8:0] scrolly;
   reg jkmode;
+
+  reg [6:0] chr_base = (7 << 12) >> 8;
+  //reg [6:0] sprimg_base = 0;
 
   wire [7:0] palette16l_read;
   wire [7:0] palette16h_read;
@@ -1168,7 +1194,7 @@ module gameduino_main(
 
   wire [10:0] column = comp_workcnt + scrollx;
   wire [10:0] row    = yy[10:1] + scrolly;
-  wire [7:0] glyph;
+  wire [8:0] glyph;
 
   wire [11:0] picaddr;
   generate
@@ -1177,7 +1203,7 @@ module gameduino_main(
   endgenerate
 
   wire en_pic = (mem_addr[14:12] == 0);
-  RAM_PICTURE picture(
+  RAM_PICTURE9_primitive picture(
     .dia(0), 
 	 .doa(glyph), 
 	 .wea(0),     
@@ -1196,13 +1222,10 @@ module gameduino_main(
   always @(posedge vga_clk)
     _column = column;
 
-  wire en_chr = (mem_addr[14:12] == 1);
+  wire [14:0] chars_readaddr = {glyph, row[2:0], _column[2], ~_column[1:0]};
   wire [1:0] charout;
-  RAM_CHR chars(
-    .dia(0), .doa(charout), .wea(0),     .ena(1), .clka(vga_clk), .addra({glyph, row[2:0], _column[2], ~_column[1:0]}),
-    .dib(mem_data_wr), .dob(mem_data_rd1),             .web(mem_wr), .enb(en_chr), .clkb(mem_clk), .addrb(mem_addr));
 
-  reg [7:0] _glyph;
+  reg [8:0] _glyph;
   always @(posedge vga_clk)
     _glyph <= glyph;
 
@@ -1318,6 +1341,13 @@ module gameduino_main(
     11'b00001xxxxx1: mem_data_rd_reg <= palette16h_read;
     11'b00010xxxxx0: mem_data_rd_reg <= palette4l_read;
     11'b00010xxxxx1: mem_data_rd_reg <= palette4h_read;
+
+    11'h0c0: mem_data_rd_reg <= chr_base[6:0];
+    //11'h0c1: mem_data_rd_reg <= sprimg_base[6:0];
+
+    11'h0c8: mem_data_rd_reg <= ninth_read_bits;
+    11'h0c9: mem_data_rd_reg <= ninth_write_bits;
+
     11'b001xxxxxxxx:
       mem_data_rd_reg <= coll_rd ? coll_o : 8'hff;
 `ifdef USE_AUDIO    
@@ -1390,9 +1420,10 @@ module gameduino_main(
 `endif    
 
   assign screenshot_reset = mem_wr & (mem_w_addr[14:11] == 5) & (mem_w_addr[10:0] == 11'h01f);
+  wire mem_reg_wr = (mem_wr && mem_w_addr[14:11] == 5); 
   always @(posedge mem_clk)
   begin
-    if (mem_wr & mem_w_addr[14:11] == 5)
+    if (mem_reg_wr) begin
       casex (mem_w_addr[10:0])
       11'h004: scrollx[7:0]   <= mem_data_wr;
       11'h005: scrollx[8 +: X_BITS-8] <= mem_data_wr;
@@ -1420,7 +1451,20 @@ module gameduino_main(
       11'h01e: screenshot_yy[7:0] <= mem_data_wr;
       11'h01f: begin screenshot_primed <= mem_data_wr[7];
                screenshot_yy[8] <= mem_data_wr; end
+
+      11'h0c0: chr_base[6:0]     <= mem_data_wr;
+      //11'h0c1: sprimg_base[6:0]  <= mem_data_wr;
+
+      //11'h0c8: ninth_read_bits   <= mem_data_wr; // handled below
+      11'h0c9: ninth_write_bits  <= mem_data_wr;
       endcase
+    end else begin
+      // When writing from host to a non-register, ninth_write_bits[0] is used to fill in the 9th bit; shift it out
+      if (host_mem_wr && (!_host_mem_wr || mem_addr_changed)) ninth_write_bits <= ninth_write_bits >> 1;      
+    end
+
+    if (mem_reg_wr && mem_w_addr[10:0] == 11'h0c8) ninth_read_bits <= mem_data_wr;
+    else if (_host_mem_rd_ram && (!__host_mem_rd_ram || _mem_addr_changed)) ninth_read_bits <= {mem_data_rd[8], ninth_read_bits[7:1]}; // Ram read previous cycle, shift the 9:th bit into ninth_read_bits.
   end
 
   /*
@@ -1501,7 +1545,18 @@ module gameduino_main(
     .SSRB(0)
   );
   wire [13:0] sprimg_readaddr;
+
+  //wire [14:0] pixel_readaddr = comp_workcnt_lt_render_width_plus[1] ? (chars_readaddr >> 2) + {chr_base, 8'b0} : sprimg_readaddr + {sprimg_base, 8'b0};
+  wire [14:0] pixel_readaddr = comp_workcnt_lt_render_width_plus[1] ? (chars_readaddr >> 2) + {chr_base, 8'b0} : sprimg_readaddr;
+
+  wire en_chr = (mem_addr[14:12] == 1);
+  wire [7:0] chars_out;
+  RAM_CHR8 chars(
+    .dia(0), .doa(chars_out), .wea(0), .ena(1), .clka(vga_clk), .addra(pixel_readaddr),
+    .dib(mem_data_wr), .dob(mem_data_rd1), .web(mem_wr), .enb(en_chr), .clkb(mem_clk), .addrb(mem_addr));
+
   wire [7:0] sprimg_data;
+  wire [7:0] sprimg_out;
   wire en_sprimg = (mem_addr[14] == 1'b1);
 //  ram16K_8_8 sprimg(
   RAM_SPRIMG sprimg(
@@ -1517,10 +1572,22 @@ module gameduino_main(
     .web(0),
     .enb(1),
     .clkb(vga_clk),
-    .addrb(sprimg_readaddr),
-    .dob(sprimg_data),
+    .addrb(pixel_readaddr),
+    .dob(sprimg_out),
     .ssrb(0)
   );
+
+  reg [1:0] _chars_readaddr01;
+  reg _pixel_readaddr14;
+  always @(posedge vga_clk) begin
+    _chars_readaddr01 <= chars_readaddr[1:0];
+    _pixel_readaddr14 <= pixel_readaddr[14];
+  end
+
+  wire [7:0] pixel_out = _pixel_readaddr14 ? chars_out : sprimg_out; 
+  assign charout = pixel_out[2*(_chars_readaddr01) +: 2];
+  assign sprimg_data = pixel_out;
+
 
   // Stage 1: scan for valid
 
