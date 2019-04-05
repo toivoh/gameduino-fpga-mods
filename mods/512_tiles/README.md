@@ -52,4 +52,4 @@ This is the memory map that the base address register `CHR_BASE` relates to; til
 Version history
 ---------------
 - v1: Initial version (in this directory)
-- `v2/`: Based on v4 of [mods/video_modes](../video_modes)
+- `v2/`: Based on v4 of [mods/video_modes](../video_modes), with further bug fixes

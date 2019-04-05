@@ -36,3 +36,11 @@ where
 A short demo video of the mod is available at https://youtu.be/jUV9lBzyr1g
 
 Note: The `RAMB16_S9_S36` primitive used to implement `RAM_SPRVAL` in the Gameduino code didn't seem to synthesize correctly for my FPGA when I tried it (the ninth bits were always zero). If you encounter this problem, you can enable the `RAM_SPRVAL_INFERRED` define to use an alternate implementation (which did take more block RAM when I synthesized it for my FPGA, though).
+
+Version history
+---------------
+- v1: Initial version (in this directory)
+- `v2/`
+    - The Gameduino's `COMM` registers (`0x2890 - 0x28bf`) turned out to be implemented in the same memories as the 4 color palettes,
+      and disappeared when they were removed. Put them back.
+    - Based on v2 of [mods/512_tiles](../512_tiles), with further bug fixes
