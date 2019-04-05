@@ -927,17 +927,35 @@ module gameduino_main(
   );
   wire AUX;
 
+// Options: defines
+// ----------------
+
+// Replace RAM_SPRVAL with RAM_SPRVAL_inferred, for better compatibility but possibly higher block RAM usage?
+//`define RAM_SPRVAL_INFERRED
+
 // Include audio support? USE_AUDIO implies USE_PCM_AUDIO
 //`define USE_AUDIO
 `define USE_PCM_AUDIO
+
+// Include the 0x2890 - 0x289f region of the COMM register? (repeated at 0x2880 - 0x288f)
+`define USE_COMM1
+// Include the 0x28a0 - 0x28bf region of the COMM register?
+`define USE_COMM2
 
 `ifdef USE_AUDIO
 `define USE_PCM_AUDIO
 `endif
 
+// Options: parameters
+// -------------------
+
   localparam WIDE_LINE_BUFFER = 1; // Reserve space for 640 pixels per line?
   localparam ENABLE_TILEMAP_128x32 = 1; // Support 128x32 tile map mode?
   localparam TILEMAP_128x32_TWO_BLOCKS = 0; // Treat 128x32 tile map as two 64x32 blocks side by side?
+  localparam ROT_FORMAT_HVD = 0; // Interpret the sprite's rot field as (horizontal, vertical, diagonal flip) instead of (v, h, d)?
+
+// Constants
+// ---------
 
   localparam X_BITS = 10; // 9 in the original
   localparam VGA_X_BITS = 11;
@@ -1016,7 +1034,7 @@ module gameduino_main(
   wire [8:0] mem_data_rd0; // picture
   wire [7:0] mem_data_rd1;
   wire [7:0] mem_data_rd2;
-  wire [7:0] mem_data_rd3;
+  wire [8:0] mem_data_rd3; // sprval
   wire [7:0] mem_data_rd4;
   wire [7:0] mem_data_rd5;
 
@@ -1057,7 +1075,7 @@ module gameduino_main(
   reg [6:0] modvoice = 64;
 `endif
 
-  reg [14:0] bg_color;
+  reg [14:0] bg_color = 4 << 10;
   reg [7:0] pin2mode = 0;
   assign pin2f = (pin2mode == 8'h46);
   assign pin2j = (pin2mode == 8'h4A);
@@ -1079,53 +1097,9 @@ module gameduino_main(
   reg [6:0] chr_base = (7 << 12) >> 8;
   //reg [6:0] sprimg_base = 0;
 
-  wire [7:0] palette16l_read;
-  wire [7:0] palette16h_read;
-  wire [4:0] palette16_addr;
-  wire [15:0] palette16_data;
-
-  // 11'b00001xxxxx0: low
-  wire palette16_wr = (mem_wr & (mem_w_addr[14:11] == 5) & (mem_w_addr[10:6] == 1));
-  ram32x8d palette16l(
-    .a(mem_addr[5:1]),
-    .wclk(mem_clk),
-    .wea((mem_w_addr[0] == 0) & palette16_wr),
-    .ad(mem_data_wr),
-    .ao(palette16l_read),
-    .b(palette16_addr),
-    .bo(palette16_data[7:0]));
-  ram32x8d palette16h(
-    .a(mem_addr[5:1]),
-    .wclk(mem_clk),
-    .wea((mem_w_addr[0] == 1) & palette16_wr),
-    .ad(mem_data_wr),
-    .ao(palette16h_read),
-    .b(palette16_addr),
-    .bo(palette16_data[15:8]));
-
-  wire [7:0] palette4l_read;
-  wire [7:0] palette4h_read;
-  wire [4:0] palette4_addr;
-  wire [15:0] palette4_data;
-
-  // 11'b00010xxxxx0: low
-  wire palette4_wr = (mem_wr & (mem_w_addr[14:11] == 5) & (mem_w_addr[10:6] == 2));
-  ram32x8d palette4l(
-    .a(mem_addr[5:1]),
-    .wclk(mem_clk),
-    .wea((mem_w_addr[0] == 0) & palette4_wr),
-    .ad(mem_data_wr),
-    .ao(palette4l_read),
-    .b(palette4_addr),
-    .bo(palette4_data[7:0]));
-  ram32x8d palette4h(
-    .a(mem_addr[5:1]),
-    .wclk(mem_clk),
-    .wea((mem_w_addr[0] == 1) & palette4_wr),
-    .ad(mem_data_wr),
-    .ao(palette4h_read),
-    .b(palette4_addr),
-    .bo(palette4_data[15:8]));
+  reg [3:0] spr_palrot_mask;
+  reg [7:0] spr_palbase_4;
+  reg [7:0] spr_palbase_16;
 
   // Generate CounterX and CounterY
   // A single line is 1040 (vga_xtot_minus_1 + 1) clocks.  Line pair is 2080 clocks.
@@ -1278,7 +1252,7 @@ module gameduino_main(
   wire [7:0] voicera_read;
 `endif
 
-  reg j1_reset = 0;
+  reg j1_reset = 1;
   reg spr_disable = 0;
   reg spr_page = 0;
 
@@ -1303,6 +1277,23 @@ module gameduino_main(
       screenshot_done <= 1;
     end
   end
+
+  wire comm_sel = (mem_addr[14:11] == 5) && (mem_addr[10:6] == 2);
+
+`ifdef USE_COMM1
+  (* ram_style = "distributed" *) reg [7:0] comm1[0:15];
+  wire [3:0] comm1_addr = mem_addr[3:0];
+  wire comm1_sel = comm_sel && (mem_addr[5] == 0);
+  wire [7:0] comm1_read = comm1[comm1_addr];
+  always @(posedge vga_clk) if (mem_wr && comm1_sel) comm1[comm1_addr] <= mem_data_wr;
+`endif
+`ifdef USE_COMM2
+  (* ram_style = "distributed" *) reg [7:0] comm2[0:31];
+  wire [4:0] comm2_addr = mem_addr[4:0];
+  wire comm2_sel = comm_sel && (mem_addr[5] == 1);
+  wire [7:0] comm2_read = comm2[comm2_addr];
+  always @(posedge vga_clk) if (mem_wr && comm2_sel) comm2[comm2_addr] <= mem_data_wr;
+`endif
 
   always @(mem_data_rd_reg)
   begin
@@ -1337,16 +1328,22 @@ module gameduino_main(
     11'h01e: mem_data_rd_reg <= public_yy[7:0];
     11'h01f: mem_data_rd_reg <= {screenshot_done, 6'b000000, public_yy[8]};
 
-    11'b00001xxxxx0: mem_data_rd_reg <= palette16l_read;
-    11'b00001xxxxx1: mem_data_rd_reg <= palette16h_read;
-    11'b00010xxxxx0: mem_data_rd_reg <= palette4l_read;
-    11'b00010xxxxx1: mem_data_rd_reg <= palette4h_read;
+`ifdef USE_COMM1
+    11'b000100xxxxx: mem_data_rd_reg <= comm1_read;
+`endif
+`ifdef USE_COMM2
+    11'b000101xxxxx: mem_data_rd_reg <= comm2_read;
+`endif
 
     11'h0c0: mem_data_rd_reg <= chr_base[6:0];
     //11'h0c1: mem_data_rd_reg <= sprimg_base[6:0];
+    11'h0c2: mem_data_rd_reg <= spr_palrot_mask;
 
     11'h0c8: mem_data_rd_reg <= ninth_read_bits;
     11'h0c9: mem_data_rd_reg <= ninth_write_bits;
+
+    11'h0d0: mem_data_rd_reg <= spr_palbase_4;
+    11'h0d1: mem_data_rd_reg <= spr_palbase_16;
 
     11'b001xxxxxxxx:
       mem_data_rd_reg <= coll_rd ? coll_o : 8'hff;
@@ -1454,9 +1451,13 @@ module gameduino_main(
 
       11'h0c0: chr_base[6:0]     <= mem_data_wr;
       //11'h0c1: sprimg_base[6:0]  <= mem_data_wr;
+      11'h0c2: spr_palrot_mask <= mem_data_wr;
 
       //11'h0c8: ninth_read_bits   <= mem_data_wr; // handled below
       11'h0c9: ninth_write_bits  <= mem_data_wr;
+
+      11'h0d0: spr_palbase_4 <= mem_data_wr;
+      11'h0d1: spr_palbase_16 <= mem_data_wr;
       endcase
     end else begin
       // When writing from host to a non-register, ninth_write_bits[0] is used to fill in the 9th bit; shift it out
@@ -1506,8 +1507,13 @@ module gameduino_main(
   reg [8:0] s1_count;
 
   wire en_sprval = (mem_addr[14:11] == 4'b0110);
-  wire [31:0] sprval_data;
+  wire [35:0] sprval_data;
+
+`ifdef RAM_SPRVAL_INFERRED
+  RAM_SPRVAL_inferred sprval(
+`else
   RAM_SPRVAL sprval(
+`endif
     .DIA(mem_data_wr),
     .WEA(mem_wr),
     .ENA(en_sprval),
@@ -1606,7 +1612,7 @@ module gameduino_main(
         s1_consider <= 0;
       end
   end
-  wire [31:0] s1_out = sprval_data;
+  wire [35:0] s1_out = sprval_data;
 
   wire [8:0] s1_sprite_y = tilemap_128x32 ? {s1_out[23:16] >= 256-16, s1_out[23:16]} : s1_out[24:16];
 
@@ -1620,8 +1626,8 @@ module gameduino_main(
   // Stage 2: fifo
   wire [4:0] s2_fullness;
   wire s3_read;
-  wire [40:0] s2_out;
-  fifo #(40) s2(.clk(vga_clk),
+  wire [44:0] s2_out;
+  fifo #(44) s2(.clk(vga_clk),
                 .wr(s1_valid), .datain({s1_id, s1_out}),
                 .rd(s3_read), .dataout(s2_out),
                 .fullness(s2_fullness));
@@ -1639,7 +1645,9 @@ module gameduino_main(
 
   reg [4:0] s3_state;
   reg [3:0] s3_pal;
-  reg [31:0] s3_in;
+  reg [3:0] s3_pal_extra;
+  reg [2:0] s3_rot;
+  reg [35:0] s3_in;
   assign s3_read = (s3_state == 15);
   always @(posedge vga_clk)
   begin
@@ -1654,11 +1662,22 @@ module gameduino_main(
       s3_state <= s3_state + 1;
     end
     s3_pal <= s2_out[15:12];
+    s3_pal_extra <= s2_out[35:32];
+    s3_rot <= s2_out[11:9];
   end
   wire [3:0] s3_yoffset = yy[4:1] - s2_out[19:16];
   wire [3:0] s3_prev_state = (s3_state == 16) ? 0 : (s3_state + 1);
-  wire [3:0] readx = (s2_out[9] ? s3_yoffset : s3_prev_state) ^ {4{s2_out[10]}};
-  wire [3:0] ready = (s2_out[9] ? s3_prev_state : s3_yoffset) ^ {4{s2_out[11]}};
+
+  wire [3:0] s2_pal = s2_out[15:12];
+  wire [2:0] s2_rot = s2_out[11:9] & ~(s2_pal[3] ? spr_palrot_mask[2:0] : ((s2_pal[3:2] == 0) ? 0 : spr_palrot_mask[3]));
+
+  wire s2_flip_d = s2_rot[0];
+  wire s2_flip_x = ROT_FORMAT_HVD ? s2_rot[2] : s2_rot[1];
+  wire s2_flip_y = ROT_FORMAT_HVD ? s2_rot[1] : s2_rot[2];
+
+  wire [3:0] readx = (s2_flip_d ? s3_yoffset : s3_prev_state) ^ {4{s2_flip_x}};
+  wire [3:0] ready = (s2_flip_d ? s3_prev_state : s3_yoffset) ^ {4{s2_flip_y}};
+
   assign sprimg_readaddr = {s2_out[30:25], ready, readx};
   wire [7:0] s3_out = sprimg_data;
 
@@ -1670,7 +1689,7 @@ module gameduino_main(
   reg s3_jk;
   always @(posedge vga_clk)
   begin
-    s3_id <= s2_out[40:32];
+    s3_id <= s2_out[44:36];
     s3_jk <= s2_out[31];
   end
 
@@ -1679,25 +1698,27 @@ module gameduino_main(
   */
   reg [15:0] sprpal4;
   reg [15:0] sprpal16;
-  assign sprpal_addr = {s3_pal[1:0], s3_out};
   reg [X_BITS-1:0] s4_compaddr;
   reg s4_valid;
   reg [8:0] s4_id;
   reg s4_jk;
   wire [3:0] subfield4 = s3_pal[1] ? s3_out[7:4] : s3_out[3:0];
   wire [1:0] subfield2 = s3_pal[2] ? (s3_pal[1] ? s3_out[7:6] : s3_out[5:4]) : (s3_pal[1] ? s3_out[3:2] : s3_out[1:0]);
-  assign palette4_addr = {s3_pal[0], subfield2};
-  assign palette16_addr = {s3_pal[0], subfield4};
+
+  wire [9:0] sprpal_addr_256 = {s3_pal[1:0], s3_out} + {s3_pal_extra, 4'b0000};
+  wire [9:0] sprpal_addr_16  = {s3_rot[0] & spr_palrot_mask[3], s3_pal_extra, s3_pal[0], subfield4} + {spr_palbase_16, 2'b0};
+  wire [9:0] sprpal_addr_4   = {s3_rot & spr_palrot_mask[2:0],  s3_pal_extra, s3_pal[0], subfield2} + {spr_palbase_4,  2'b0};
+
+  assign sprpal_addr = s3_pal[3] ? sprpal_addr_4 : ((s3_pal[3:2] == 0) ? sprpal_addr_256 : sprpal_addr_16);
+
   always @(posedge vga_clk)
   begin
     s4_compaddr <= s3_compaddr;
     s4_valid <= s3_valid;
     s4_id <= s3_id;
     s4_jk <= s3_jk;
-    sprpal4 <= palette4_data;
-    sprpal16 <= palette16_data;
   end
-  wire [15:0] s4_out = s3_pal[3] ? sprpal4 : ((s3_pal[3:2] == 0) ? sprpal_data : sprpal16);
+  wire [15:0] s4_out = sprpal_data;
 
   // Common signals for collision and composite
   wire sprite_write = s4_valid & !s4_out[15];  // transparency
