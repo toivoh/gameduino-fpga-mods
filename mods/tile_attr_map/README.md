@@ -88,7 +88,8 @@ This mod makes some changes to preserve the appearance of the splash screen desp
 Additional options
 ------------------
 The mod also introduces two synthesis time options:
-- `ATTR_NINTH_PAL_BITS`: when set to one, use the tile map entry format `pp pppppptt tttttttt` instead, as in v1 of the mod
+- `ATTR_NINTH_PAL_BITS_DEFAULT`: when set to one, use the tile map entry format `pp pppppptt tttttttt` instead, as in v1 of the mod
+    - Define `ATTR_NINTH_PAL_BITS_REG` to place this option in a register at `0x28c5`
 - `SUPPORT_8BIT_RAM_PIC`: disable if the original mode with one byte per tile map entry is not needed. This saves a bit more than 20 slices in the xc3s200a FPGA.
 - The positions of `RAM_PIC` and `RAM_CHR` can be swapped in the memory map, which makes the tile map accessible as 6 kB of contiguous memory (see the parameters `MEM_PAGE_ADDR_RAM_PIC` and `MEM_PAGE_ADDR_RAM_CHR` in the source)
 
@@ -96,3 +97,7 @@ Version history
 ---------------
 - [v1/](v1/): Original version
 - [v2/](v2/): Change the tile map entry attribute format to `tt pppppppp tttttttt`, with the option `ATTR_NINTH_PAL_BITS=1` to change it back
+- [v3/](v3/):
+    - Add an option (`ATTR_NINTH_PAL_BITS_REG`) to put the tile map entry format option (now `ATTR_NINTH_PAL_BITS_DEFAULT`) in a register (`0x28c5`), default on
+    - Fix bug that prevented reading the ninth bit from `RAM_PAL` (in this mod, the top 2k of `RAM_PIC`)
+    - Based on v2 of [mods/sprite_palettes](../sprite_palettes), with further bug fixes
