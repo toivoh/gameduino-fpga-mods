@@ -142,6 +142,31 @@ module ram32x8s(
   endgenerate
 endmodule
 
+module ram16x8d_init #(parameter [127:0] INIT=0) (
+  input [7:0] da,
+  input wea,
+  input wclk,
+  input [3:0] addra,
+  input [3:0] addrb,
+  output [7:0] outa,
+  output [7:0] outb
+  );
+  genvar i;
+  generate 
+    for (i = 0; i < 8; i=i+1) begin : ramx
+      RAM16X1D #(.INIT({
+        INIT[8*15+i], INIT[8*14+i], INIT[8*13+i], INIT[8*12+i], INIT[8*11+i], INIT[8*10+i], INIT[8* 9+i], INIT[8* 8+i],
+        INIT[8* 7+i], INIT[8* 6+i], INIT[8* 5+i], INIT[8* 4+i], INIT[8* 3+i], INIT[8* 2+i], INIT[8* 1+i], INIT[8* 0+i]
+      })) ram(
+        .D(da[i]), .WE(wea), .WCLK(wclk),
+        .A0(addra[0]), .A1(addra[1]), .A2(addra[2]), .A3(addra[3]),
+        .DPRA0(addrb[0]), .DPRA1(addrb[1]), .DPRA2(addrb[2]), .DPRA3(addrb[3]),
+        .SPO(outa[i]), .DPO(outb[i])
+      );
+    end
+  endgenerate
+endmodule
+
 module ram64x8s(
   input [7:0] d,
   input we,
@@ -944,6 +969,8 @@ module gameduino_main(
 
 // Include support for original RAM_PIC format with one byte per entry?
 `define SUPPORT_8BIT_RAM_PIC
+// Include support for the CHR_TEXT_MODE_MASK register to mark some tiles a two-color with attribute composed of 4 foreground and 4 background color bits?
+`define SUPPORT_TEXT_MODE_TILES
 
 `ifdef USE_AUDIO
 `define USE_PCM_AUDIO
@@ -970,6 +997,10 @@ module gameduino_main(
   // 1: pp pppppptt tttttttt - two highest palette bits in ninth bits
   // This is the default value, stored in a register if ATTR_NINTH_PAL_BITS_REG is defined
   localparam ATTR_NINTH_PAL_BITS_DEFAULT = 0;
+
+  // 0: Only tile ids 0-255 (and 512-767) can be used for text mode tiles; the bits in CHR_TEXT_MODE_MASK denote blocks of 32 tile ids
+  // 1: Tile ids 0-511 (and 512-1023) can be used for text mode tiles; the bits in CHR_TEXT_MODE_MASK denote blocks of 64 tile ids
+  localparam TEXT_MODE_TILES_BIG_CHUNKS = 0;
 
 // Constants
 // ---------
@@ -1129,11 +1160,37 @@ module gameduino_main(
   reg [7:0] chr_attr_mask = 'hff;
 `else
   wire [7:0] chr_attr_mask = 'hff;
-`endif  
+`endif
+`ifdef SUPPORT_TEXT_MODE_TILES
+  reg [7:0] chr_text_mode_mask = 0;
+`else
+  wire [7:0] chr_text_mode_mask = 0;
+`endif
 
-  reg [7:0] spr_palbase_4 = 0;
-  reg [7:0] spr_palbase_16 = 252;
-  reg [7:0] chr_palbase = 0;
+  /*
+  // Inferred distributed RAM with initializer doesn't synthesize right in ise, so we use a ram16x8d_init instead, below
+  (* ram_style = "distributed" *) reg [7:0] palbases[0:7];
+  initial begin
+    palbases[1] = 252; // spr_palbase_16  
+  end
+  */
+
+  wire [3:0] palbases_addr;
+  wire [7:0] palbases_out;
+
+  wire [7:0] palbases_read;
+  wire palbases_sel = (mem_addr[14:11] == 5) && (mem_addr[10:3] == ('hd0 >> 3));
+
+  // Entries:
+  // 0: spr_palbase_4, 1: spr_palbase_16, 2: spr_palbase_256, 3: chr_palbase, 4: chr_palbase_fg, 5: chr_palbase_bg
+  localparam [7:0] INITIAL_SPR_PALBASE_16 = 252;
+  localparam [127:0] PALBASES_INIT = 
+    {INITIAL_SPR_PALBASE_16, {1{8'b0}}};
+  ram16x8d_init #(.INIT(PALBASES_INIT)) palbases(
+    .wclk(vga_clk),
+    .wea(palbases_sel && mem_wr), .da(mem_data_wr), .addra(mem_addr[3:0]), .outa(palbases_read),
+    .addrb(palbases_addr), .outb(palbases_out) 
+  );
 
 `ifdef ATTR_NINTH_PAL_BITS_REG
   reg attr_ninths_are_pal_bits = ATTR_NINTH_PAL_BITS_DEFAULT;
@@ -1299,20 +1356,36 @@ module gameduino_main(
   always @(posedge vga_clk)
     _column = column;
 
-  wire [15:0] chars_readaddr = {glyph, row[2:0], _column[2], ~_column[1:0]};
+`ifdef SUPPORT_TEXT_MODE_TILES
+  wire is_text_mode_char = TEXT_MODE_TILES_BIG_CHUNKS ? chr_text_mode_mask[glyph[8:6]] : chr_text_mode_mask[glyph[7:5]] && (glyph[8] == 0);
+`else
+  wire is_text_mode_char = 0; 
+`endif
+  wire [9:0] masked_glyph = {glyph[9] && !is_text_mode_char, glyph[8:0]};
+  wire [15:0] chars_readaddr = {masked_glyph, row[2:0], _column[2], ~_column[1:0]};
   wire [1:0] charout;
 
   wire [7:0] attr = pic_with_attr ? (attr_ninths_are_pal_bits ? pic_out[17:10] : pic_out[15:8]) : glyph & chr_attr_mask;
 
+  reg [9:0] _glyph;
   reg [7:0] _attr;
-  always @(posedge vga_clk) _attr <= attr;
+  reg _is_text_mode_char;
+  always @(posedge vga_clk) begin
+    _glyph <= glyph;
+    _attr <= attr;
+    _is_text_mode_char <= is_text_mode_char;
+  end
 
   wire [4:0] bg_r;
   wire [4:0] bg_g;
   wire [4:0] bg_b;
 
   wire [15:0] char_matte;
-  wire [9:0] charpal_addr = {_attr + chr_palbase, charout};
+
+  wire text_char_pixel = charout[_glyph[9]];
+  wire [3:0] text_charpal_addr = text_char_pixel ? _attr[3:0] : _attr[7:4];
+  wire [2:0] char_palbase_index = _is_text_mode_char ? (text_char_pixel ? 4 : 5) : 3;
+  wire [9:0] charpal_addr = _is_text_mode_char ? text_charpal_addr : {_attr, charout};
 
   // wire [4:0] bg_mix_r = bg_color[14:10] + char_matte[14:10];
   // wire [4:0] bg_mix_g = bg_color[9:5]   + char_matte[9:5];
@@ -1430,6 +1503,9 @@ module gameduino_main(
 `ifdef SUPPORT_8BIT_RAM_PIC
     11'h0c3: mem_data_rd_reg <= chr_attr_mask;
 `endif
+`ifdef SUPPORT_TEXT_MODE_TILES
+    11'h0c4: mem_data_rd_reg <= chr_text_mode_mask;
+`endif
 `ifdef ATTR_NINTH_PAL_BITS_REG
     11'h0c5: mem_data_rd_reg <= attr_ninths_are_pal_bits;
 `endif
@@ -1437,9 +1513,8 @@ module gameduino_main(
     11'h0c8: mem_data_rd_reg <= ninth_read_bits;
     11'h0c9: mem_data_rd_reg <= ninth_write_bits;
 
-    11'h0d0: mem_data_rd_reg <= spr_palbase_4;
-    11'h0d1: mem_data_rd_reg <= spr_palbase_16;
-    11'h0d3: mem_data_rd_reg <= chr_palbase;
+    // 11'h0d0 - 11'h0d7
+    11'b00011010xxx: mem_data_rd_reg <= palbases_read;
 
     11'b001xxxxxxxx:
       mem_data_rd_reg <= coll_rd ? coll_o : 8'hff;
@@ -1552,6 +1627,9 @@ module gameduino_main(
 `ifdef SUPPORT_8BIT_RAM_PIC
       11'h0c3: chr_attr_mask <= mem_data_wr;
 `endif
+`ifdef SUPPORT_TEXT_MODE_TILES
+      11'h0c4: chr_text_mode_mask <= mem_data_wr;
+`endif
 `ifdef ATTR_NINTH_PAL_BITS_REG
       11'h0c5: attr_ninths_are_pal_bits <= mem_data_wr;
 `endif
@@ -1559,9 +1637,7 @@ module gameduino_main(
       //11'h0c8: ninth_read_bits   <= mem_data_wr; // handled below
       11'h0c9: ninth_write_bits  <= mem_data_wr;
 
-      11'h0d0: spr_palbase_4 <= mem_data_wr;
-      11'h0d1: spr_palbase_16 <= mem_data_wr;
-      11'h0d3: chr_palbase <= mem_data_wr;
+      // 11'h0d0 - 11'h0d7: in palbases
       endcase
     end else begin
       // When writing from host to a non-register, ninth_write_bits[0] is used to fill in the 9th bit; shift it out
@@ -1635,10 +1711,14 @@ module gameduino_main(
     .SSRB(0)
   );
   wire [9:0] sprpal_addr;
+  wire [2:0] spr_palbase_index;
   wire [15:0] sprpal_data;
   wire en_sprpal = (mem_addr[14:11] == 4'b0111);
 
-  wire [9:0] pal_addr = comp_workcnt_lt_render_width_plus[2] ? charpal_addr : sprpal_addr;
+  wire [9:0] pal_addr0 = comp_workcnt_lt_render_width_plus[2] ? charpal_addr : sprpal_addr;
+  wire [2:0] palbase_index = comp_workcnt_lt_render_width_plus[2] ? char_palbase_index : spr_palbase_index;
+  assign palbases_addr = palbase_index;
+  wire [9:0] pal_addr = pal_addr0 + {palbases_out, 2'b0};
 
   RAM_SPRPAL sprpal(
     .DIA(mem_data_wr),
@@ -1815,10 +1895,11 @@ module gameduino_main(
   wire [1:0] subfield2 = s3_pal[2] ? (s3_pal[1] ? s3_out[7:6] : s3_out[5:4]) : (s3_pal[1] ? s3_out[3:2] : s3_out[1:0]);
 
   wire [9:0] sprpal_addr_256 = {s3_pal[1:0], s3_out} + {s3_pal_extra, 4'b0000};
-  wire [9:0] sprpal_addr_16  = {s3_rot[0] & spr_palrot_mask[3], s3_pal_extra, s3_pal[0], subfield4} + {spr_palbase_16, 2'b0};
-  wire [9:0] sprpal_addr_4   = {s3_rot & spr_palrot_mask[2:0],  s3_pal_extra, s3_pal[0], subfield2} + {spr_palbase_4,  2'b0};
+  wire [9:0] sprpal_addr_16  = {s3_rot[0] & spr_palrot_mask[3], s3_pal_extra, s3_pal[0], subfield4};
+  wire [9:0] sprpal_addr_4   = {s3_rot & spr_palrot_mask[2:0],  s3_pal_extra, s3_pal[0], subfield2};
 
   assign sprpal_addr = s3_pal[3] ? sprpal_addr_4 : ((s3_pal[3:2] == 0) ? sprpal_addr_256 : sprpal_addr_16);
+  assign spr_palbase_index = s3_pal[3] ? 0 : ((s3_pal[3:2] == 0) ? 2 : 1);
 
   always @(posedge vga_clk)
   begin
