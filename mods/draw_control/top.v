@@ -167,6 +167,25 @@ module ram16x8d_init #(parameter [127:0] INIT=0) (
   endgenerate
 endmodule
 
+module ram32x8s_init #(parameter [255:0] INIT=0) (
+  input [7:0] d,
+  input we,
+  input wclk,
+  input [4:0] a,
+  output [7:0] o);
+  genvar i;
+  generate 
+    for (i = 0; i < 8; i=i+1) begin : ramx
+      RAM32X1S #(.INIT({
+        INIT[8*31+i], INIT[8*30+i], INIT[8*29+i], INIT[8*28+i], INIT[8*27+i], INIT[8*26+i], INIT[8*25+i], INIT[8*24+i],
+        INIT[8*23+i], INIT[8*22+i], INIT[8*21+i], INIT[8*20+i], INIT[8*19+i], INIT[8*18+i], INIT[8*17+i], INIT[8*16+i],
+        INIT[8*15+i], INIT[8*14+i], INIT[8*13+i], INIT[8*12+i], INIT[8*11+i], INIT[8*10+i], INIT[8* 9+i], INIT[8* 8+i],
+        INIT[8* 7+i], INIT[8* 6+i], INIT[8* 5+i], INIT[8* 4+i], INIT[8* 3+i], INIT[8* 2+i], INIT[8* 1+i], INIT[8* 0+i]
+      })) r0(.O(o[i]), .A0(a[0]), .A1(a[1]), .A2(a[2]), .A3(a[3]), .A4(a[4]), .D(d[i]), .WCLK(wclk), .WE(we));
+    end
+  endgenerate
+endmodule
+
 module ram64x8s(
   input [7:0] d,
   input we,
@@ -1142,7 +1161,25 @@ module gameduino_main(
   reg [8:0] scrolly;
   reg jkmode;
 
-  reg [7:0] pic_mode = {1'b0, 2'd2, 2'd2, 3'd0};
+  // Initial values and memory offsets for shadowed registers to be initialized to something != 0
+  localparam INITIAL_J1_RESET = 1;
+  localparam [10:0] SHADOW1_INDEX_J1_RESET = 11'h009;
+  localparam INITIAL_PIC_MODE = {1'b0, 2'd2, 2'd2, 3'd0};
+  localparam [10:0] SHADOW1_INDEX_PIC_MODE = 11'h019;
+  localparam INITIAL_WINDOW_X1 = 2**X_BITS-1;
+  localparam [10:0] SHADOW1_INDEX_WINDOW_X1 = 11'h01c; // 16 bits
+  localparam INITIAL_SPRITES_END = 255;
+  localparam [10:0] SHADOW1_INDEX_SPRITES_END = 11'h016;
+
+  localparam INITIAL_CHR_BASE = (7 << 12) >> 8;
+  localparam [10:0] PALBASES_SHADOW_INDEX_CHR_BASE = 11'h0c0;
+  localparam INITIAL_CHR_ATTR_MASK = 'hff;
+  localparam [10:0] PALBASES_SHADOW_INDEX_CHR_ATTR_MASK = 11'h0c3;
+  localparam [10:0] PALBASES_SHADOW_INDEX_ATTR_NINTH_PB = 11'h0c5; // for register attr_ninths_are_pal_bits
+
+  reg j1_reset = INITIAL_J1_RESET;
+
+  reg [7:0] pic_mode = INITIAL_PIC_MODE;
   wire [2:0] pic_base = pic_mode[2:0];
   wire [1:0] pic_width_mode = pic_mode[4:3];
   wire [1:0] pic_height_mode = pic_mode[6:5];
@@ -1152,14 +1189,24 @@ module gameduino_main(
   wire pic_with_attr = 1;
 `endif  
 
-  reg [6:0] chr_base = (7 << 12) >> 8;
+  reg [2:0] draw_mode;
+  wire spr_disable = draw_mode[0]; 
+  wire bg_disable = draw_mode[1];
+  wire sprites_behind_bg = draw_mode[2];
+
+  reg [X_BITS-1:0] window_x0 = 0; // Should be < render_width
+  reg [X_BITS-1:0] window_x1 = INITIAL_WINDOW_X1; // Should be >= window_x0
+  reg [8:0] sprites_base = 0;
+  reg [7:0] sprites_end = INITIAL_SPRITES_END; // The last sprite to draw is the one that has an index whose LSB matches sprites_end
+
+  reg [6:0] chr_base = INITIAL_CHR_BASE;
   //reg [6:0] sprimg_base = 0;
 
   reg [3:0] spr_palrot_mask;
 `ifdef SUPPORT_8BIT_RAM_PIC
-  reg [7:0] chr_attr_mask = 'hff;
+  reg [7:0] chr_attr_mask = INITIAL_CHR_ATTR_MASK;
 `else
-  wire [7:0] chr_attr_mask = 'hff;
+  wire [7:0] chr_attr_mask = INITIAL_CHR_ATTR_MASK;
 `endif
 `ifdef SUPPORT_TEXT_MODE_TILES
   reg [7:0] chr_text_mode_mask = 0;
@@ -1179,17 +1226,25 @@ module gameduino_main(
   wire [7:0] palbases_out;
 
   wire [7:0] palbases_read;
-  wire palbases_sel = (mem_addr[14:11] == 5) && (mem_addr[10:3] == ('hd0 >> 3));
+  
+  //wire palbases_sel = (mem_addr[14:11] == 5) && (mem_addr[10:3] == ('hd0 >> 3));
+  // map 0x28d0 - 0x28d7 to palbases[0:7]
+  // map 0x28c0 - 0x28c7 to palbases[8:15] (as shadow registers)
+  wire palbases_sel = (mem_addr[14:11] == 5) && (mem_addr[10:5] == ('hc0 >> 5)) && (mem_addr[3] == 0);
+  wire [3:0] palbases_mem_addr = {!mem_addr[4], mem_addr[2:0]};
 
   // Entries:
   // 0: spr_palbase_4, 1: spr_palbase_16, 2: spr_palbase_256, 3: chr_palbase, 4: chr_palbase_fg, 5: chr_palbase_bg
   localparam [7:0] INITIAL_SPR_PALBASE_16 = 252;
   localparam [127:0] PALBASES_INIT = 
-    {INITIAL_SPR_PALBASE_16, {1{8'b0}}};
+    {INITIAL_SPR_PALBASE_16, {1{8'b0}}} |
+    {INITIAL_CHR_BASE,            {(PALBASES_SHADOW_INDEX_CHR_BASE      - 'hc0 + 8){8'b0}}} |
+    {INITIAL_CHR_ATTR_MASK,       {(PALBASES_SHADOW_INDEX_CHR_ATTR_MASK - 'hc0 + 8){8'b0}}} |
+    {ATTR_NINTH_PAL_BITS_DEFAULT, {(PALBASES_SHADOW_INDEX_ATTR_NINTH_PB - 'hc0 + 8){8'b0}}};
   ram16x8d_init #(.INIT(PALBASES_INIT)) palbases(
     .wclk(vga_clk),
-    .wea(palbases_sel && mem_wr), .da(mem_data_wr), .addra(mem_addr[3:0]), .outa(palbases_read),
-    .addrb(palbases_addr), .outb(palbases_out) 
+    .wea(palbases_sel && mem_wr), .da(mem_data_wr), .addra(palbases_mem_addr), .outa(palbases_read),
+    .addrb(palbases_addr), .outb(palbases_out)
   );
 
 `ifdef ATTR_NINTH_PAL_BITS_REG
@@ -1213,6 +1268,7 @@ module gameduino_main(
   wire lastline = (CounterY == vga_ytot_minus_1);
   wire [9:0] _CounterY = lastline ? 0 : (CounterY + 1);
 
+  wire frame_finish = CounterXmaxed && lastline; 
   always @(posedge vga_clk)
   if (CounterXmaxed) begin
     CounterY <= _CounterY;
@@ -1220,21 +1276,47 @@ module gameduino_main(
       frames <= frames + 1;
   end
 
-  reg [12:0] comp_workcnt; // Compositor work address
+  // Is background drawing active (in a given pipeline stage)
+  // bg_active[0] is the state, bg_active[n] is n cycles delayed (for pipelining)
+  reg [4:0] bg_active = 0; // TODO: how many bits?
+  always @(posedge vga_clk) bg_active[4:1] <= bg_active[3:0];
+  // Do we want to start drawing sprites as soon as the background drawing is done?
+  reg sprite_draw_enabled = 0;
+  wire sprite_draw_active; // is any part of the sprite pipeline currently active?
+  reg sprite_scan_active = 0;
+
+  reg [12:0] comp_workcnt; // Compositor work address; the x coordinate where the tile background is currently being written
   wire [12:0] comp_workcnt_plus_1 = comp_workcnt + 1;
-  reg [4:0] comp_workcnt_lt_render_width_plus; // comp_workcnt_lt_render_width_plus[n] = (comp_workcnt < render_width + n) 
+  
+  reg [12:0] comp_workcnt_m1, comp_workcnt_m2, comp_workcnt_m3; // Delay chain for later stages
+  always @(posedge vga_clk) begin  comp_workcnt_m3 <= comp_workcnt_m2; comp_workcnt_m2 <= comp_workcnt_m1; comp_workcnt_m1 <= comp_workcnt;  end
+
+  // When one of these goes high, it's ok to start a new rendering activity in the next cycle
+  wire bg_draw_finish = bg_active[0] && (comp_workcnt_plus_1 >= render_width || comp_workcnt == window_x1);
+  wire sprite_draw_finish = sprite_draw_enabled && !sprite_draw_active;
+
+  wire j1_start_draw;
+  // When start_draw_line goes high, a new line will start on the next pixel
+  wire start_draw_line = (CounterXmaxed & (CounterY[0] == !vga_active_y0[0]));
+  wire start_draw = start_draw_line || j1_start_draw;
+
+  wire start_bg_draw =     ( (!sprites_behind_bg || spr_disable) ? start_draw : sprite_draw_finish ) && !bg_disable;
+  wire start_sprite_draw = (  (sprites_behind_bg || bg_disable)  ? start_draw : bg_draw_finish     ) && !spr_disable;
+  wire start_sprite_scan = start_draw && !spr_disable;
+
+  always @(posedge vga_clk) begin
+    if (start_sprite_draw) sprite_draw_enabled <= 1;
+    else if (sprite_draw_finish) sprite_draw_enabled <= 0;
+  end
 
   always @(posedge vga_clk)
   begin
-    if (CounterXmaxed & (CounterY[0] == !vga_active_y0[0])) begin
-      // A new line will start on the next pixel, reset:
-      comp_workcnt <= 0;
-      comp_workcnt_lt_render_width_plus <= 1; // comp_workcnt < render_width + any nonnegative number 
-    end else begin
+    if (start_bg_draw) begin
+      comp_workcnt <= window_x0;
+      bg_active[0] <= 1;
+    end else if (bg_active[0]) begin
       comp_workcnt <= comp_workcnt_plus_1;
-      if (comp_workcnt_plus_1 == render_width)
-        comp_workcnt_lt_render_width_plus[0] <= 0;
-      comp_workcnt_lt_render_width_plus[4:1] <= comp_workcnt_lt_render_width_plus[3:0];
+      if (bg_draw_finish) bg_active[0] <= 0;
     end
   end
 
@@ -1391,7 +1473,8 @@ module gameduino_main(
   // wire [4:0] bg_mix_g = bg_color[9:5]   + char_matte[9:5];
   // wire [4:0] bg_mix_b = bg_color[4:0]   + char_matte[4:0];
   // wire [14:0] char_final = char_matte[15] ? {bg_mix_r, bg_mix_g, bg_mix_b} : char_matte[14:0];
-  wire [14:0] char_final = char_matte[15] ? bg_color : char_matte[14:0];
+  // wire [14:0] char_final = char_matte[15] ? bg_color : char_matte[14:0];
+  wire [15:0] char_final = char_matte;
 
   reg [7:0] mem_data_rd_reg;
 
@@ -1412,10 +1495,6 @@ module gameduino_main(
   wire [7:0] voicela_read;
   wire [7:0] voicera_read;
 `endif
-
-  reg j1_reset = 1;
-  reg spr_disable = 0;
-  reg spr_page = 0;
 
   // Screenshot notes
   // three states, controlled by screenshot_primed, _done:
@@ -1456,22 +1535,60 @@ module gameduino_main(
   always @(posedge vga_clk) if (mem_wr && comm2_sel) comm2[comm2_addr] <= mem_data_wr;
 `endif
 
-  always @(mem_data_rd_reg)
+  // Shadow registers, to save LUTs compared to reading back from flip flops.
+  // Works for registers that are read+write from host, read only from the Gameduino (except j1).
+  // The value is stored both in flip flops, for reading by the Gameduino, and distributed RAM, for reading by host.
+  // Must make sure that the two values are initialized in sync; writing will make sure that they stay in sync. 
+
+  // Shadow registers for 0x2800 - 0x281f
+  wire shadow1_sel = (mem_addr[14:11] == 5) && (mem_addr[10:5] == 0);
+  wire [7:0] shadow1_read;
+/*
+  // Inferred distributed RAM with initializer doesn't synthesize right in ise, so we use a ram32x8s_init instead, below
+  (* ram_style = "distributed" *) reg [7:0] shadow1_regs[0:31];
+  initial begin : init_shadow_regs1
+    integer i;
+    for (i = 0; i < 32; i = i + 1) shadow1[i] = 0;
+    shadow1[SHADOW1_INDEX_PIC_MODE] = INITIAL_PIC_MODE;
+    shadow1[SHADOW1_INDEX_WINDOW_X1] = INITIAL_WINDOW_X1;
+    shadow1[SHADOW1_INDEX_SPRITES_END] = INITIAL_SPRITES_END;
+  end
+
+  wire [4:0] shadow1_addr = mem_addr[4:0];
+  assign shadow1_read = shadow1_regs[shadow1_addr];
+  always @(posedge vga_clk) if (mem_wr && shadow1_sel) shadow1_regs[shadow1_addr] <= mem_data_wr;
+*/
+
+  localparam [255:0] SHADOW1_INIT = 
+    {INITIAL_J1_RESET, {SHADOW1_INDEX_J1_RESET{8'b0}}} |
+    {INITIAL_PIC_MODE, {SHADOW1_INDEX_PIC_MODE{8'b0}}} |
+    {INITIAL_WINDOW_X1, {SHADOW1_INDEX_WINDOW_X1{8'b0}}} | 
+    {INITIAL_SPRITES_END, {SHADOW1_INDEX_SPRITES_END{8'b0}}};
+  ram32x8s_init #(.INIT(SHADOW1_INIT)) shadow1_regs (
+    .d(mem_data_wr), .we(mem_wr && shadow1_sel), .wclk(vga_clk), .a(mem_addr[4:0]), .o(shadow1_read)
+  );
+
+  always @*
   begin
     casex (mem_r_addr[10:0])
     11'h000: mem_data_rd_reg <= 8'h6d;  // Gameduino ident
     11'h001: mem_data_rd_reg <= `REVISION;
     11'h002: mem_data_rd_reg <= frames;
     11'h003: mem_data_rd_reg <= coll_rd;  // called VBLANK, but really "is coll readable?"
+/*
+    // Plain rw registers: reads provided by shadow1_read below instead
     11'h004: mem_data_rd_reg <= scrollx[7:0];
     11'h005: mem_data_rd_reg <= scrollx[8 +: X_BITS-8];
     11'h006: mem_data_rd_reg <= scrolly[7:0];
     11'h007: mem_data_rd_reg <= scrolly[8];
     11'h008: mem_data_rd_reg <= jkmode;
-    11'h009: mem_data_rd_reg <= j1_reset;
-    11'h00a: mem_data_rd_reg <= spr_disable;
-    11'h00b: mem_data_rd_reg <= spr_page;
+    SHADOW1_INDEX_J1_RESET: mem_data_rd_reg <= j1_reset;
+
+    11'h00a: mem_data_rd_reg <= sprites_base[7:0]; // spr_disable was here 
+    11'h00b: mem_data_rd_reg <= sprites_base[8];   // was: spr_page; sprites_base[8] can be used the same way
+
     11'h00c: mem_data_rd_reg <= pin2mode;
+    11'h00d: mem_data_rd_reg <= draw_mode; // contains spr_disable flag
     11'h00e: mem_data_rd_reg <= bg_color[7:0];
     11'h00f: mem_data_rd_reg <= bg_color[14:8];
 `ifdef USE_PCM_AUDIO
@@ -1484,11 +1601,21 @@ module gameduino_main(
     11'h014: mem_data_rd_reg <= modvoice;
 `endif
 
+    11'h016: mem_data_rd_reg <= sprites_end;
     11'h018: mem_data_rd_reg <= graphics_mode;
     11'h019: mem_data_rd_reg <= pic_mode;
+    11'h01a: mem_data_rd_reg <= window_x0[7:0];
+    11'h01b: mem_data_rd_reg <= window_x0[8 +: X_BITS-8];
+    11'h01c: mem_data_rd_reg <= window_x1[7:0];
+    11'h01d: mem_data_rd_reg <= window_x1[8 +: X_BITS-8];
+*/
 
     11'h01e: mem_data_rd_reg <= public_yy[7:0];
     11'h01f: mem_data_rd_reg <= {screenshot_done, 6'b000000, public_yy[8]};
+
+    // Catch-all for shadow reads
+    // NOTE: All special cased reads for region 0x2800 - 0x281f must come before this in the case statement!
+    11'b000000xxxxx: mem_data_rd_reg <= shadow1_read;
 
 `ifdef USE_COMM1
     11'b000100xxxxx: mem_data_rd_reg <= comm1_read;
@@ -1497,6 +1624,8 @@ module gameduino_main(
     11'b000101xxxxx: mem_data_rd_reg <= comm2_read;
 `endif
 
+/*
+    // Plain rw registers: reads provided as shadow reads by palbases_read below
     11'h0c0: mem_data_rd_reg <= chr_base[6:0];
     //11'h0c1: mem_data_rd_reg <= sprimg_base[6:0];
     11'h0c2: mem_data_rd_reg <= spr_palrot_mask;
@@ -1509,10 +1638,13 @@ module gameduino_main(
 `ifdef ATTR_NINTH_PAL_BITS_REG
     11'h0c5: mem_data_rd_reg <= attr_ninths_are_pal_bits;
 `endif
+*/
 
     11'h0c8: mem_data_rd_reg <= ninth_read_bits;
     11'h0c9: mem_data_rd_reg <= ninth_write_bits;
 
+    // 11'h0c0 - 11'h0c7: Catch-all for shadow reads (stored in palbases)
+    11'b00011000xxx: mem_data_rd_reg <= palbases_read;
     // 11'h0d0 - 11'h0d7
     11'b00011010xxx: mem_data_rd_reg <= palbases_read;
 
@@ -1598,10 +1730,13 @@ module gameduino_main(
       11'h006: scrolly[7:0]   <= mem_data_wr;
       11'h007: scrolly[8]     <= mem_data_wr;
       11'h008: jkmode         <= mem_data_wr;
-      11'h009: j1_reset       <= mem_data_wr;
-      11'h00a: spr_disable    <= mem_data_wr;
-      11'h00b: spr_page       <= mem_data_wr;
+      SHADOW1_INDEX_J1_RESET: j1_reset <= mem_data_wr;
+
+      11'h00a: sprites_base[7:0] <= mem_data_wr; // spr_disable was here
+      11'h00b: sprites_base[8] <= mem_data_wr;   // was: spr_page; sprites_base[8] can be used the same way 
+      
       11'h00c: pin2mode       <= mem_data_wr;
+      11'h00d: draw_mode      <= mem_data_wr;  // contains spr_disable flag
       11'h00e: bg_color[7:0]  <= mem_data_wr;
       11'h00f: bg_color[14:8] <= mem_data_wr;
 `ifdef USE_PCM_AUDIO
@@ -1614,24 +1749,29 @@ module gameduino_main(
       11'h014: modvoice       <= mem_data_wr;
 `endif
 
+      11'h016: sprites_end    <= mem_data_wr;
       11'h018: graphics_mode  <= mem_data_wr;
       11'h019: pic_mode       <= mem_data_wr;
+      11'h01a: window_x0[7:0] <= mem_data_wr;
+      11'h01b: window_x0[8 +: X_BITS-8] <= mem_data_wr;
+      11'h01c: window_x1[7:0] <= mem_data_wr;
+      11'h01d: window_x1[8 +: X_BITS-8] <= mem_data_wr;
 
       11'h01e: screenshot_yy[7:0] <= mem_data_wr;
       11'h01f: begin screenshot_primed <= mem_data_wr[7];
                screenshot_yy[8] <= mem_data_wr; end
 
-      11'h0c0: chr_base[6:0]     <= mem_data_wr;
+      PALBASES_SHADOW_INDEX_CHR_BASE: chr_base[6:0] <= mem_data_wr;
       //11'h0c1: sprimg_base[6:0]  <= mem_data_wr;
       11'h0c2: spr_palrot_mask <= mem_data_wr;
 `ifdef SUPPORT_8BIT_RAM_PIC
-      11'h0c3: chr_attr_mask <= mem_data_wr;
+      PALBASES_SHADOW_INDEX_CHR_ATTR_MASK: chr_attr_mask <= mem_data_wr;
 `endif
 `ifdef SUPPORT_TEXT_MODE_TILES
       11'h0c4: chr_text_mode_mask <= mem_data_wr;
 `endif
 `ifdef ATTR_NINTH_PAL_BITS_REG
-      11'h0c5: attr_ninths_are_pal_bits <= mem_data_wr;
+      PALBASES_SHADOW_INDEX_ATTR_NINTH_PB: attr_ninths_are_pal_bits <= mem_data_wr;
 `endif
 
       //11'h0c8: ninth_read_bits   <= mem_data_wr; // handled below
@@ -1684,7 +1824,7 @@ module gameduino_main(
   // Sprite memory
 
   // Stage 1: scan for valid
-  reg [8:0] s1_count;
+  reg [8:0] sprite_scan_index;
 
   wire en_sprval = (mem_addr[14:11] == 4'b0110);
   wire [35:0] sprval_data;
@@ -1706,7 +1846,7 @@ module gameduino_main(
     .WEB(0),
     .ENB(1),
     .CLKB(vga_clk),
-    .ADDRB({spr_page, s1_count[7:0]}),
+    .ADDRB(sprite_scan_index),
     .DOB(sprval_data),
     .SSRB(0)
   );
@@ -1715,8 +1855,8 @@ module gameduino_main(
   wire [15:0] sprpal_data;
   wire en_sprpal = (mem_addr[14:11] == 4'b0111);
 
-  wire [9:0] pal_addr0 = comp_workcnt_lt_render_width_plus[2] ? charpal_addr : sprpal_addr;
-  wire [2:0] palbase_index = comp_workcnt_lt_render_width_plus[2] ? char_palbase_index : spr_palbase_index;
+  wire [9:0] pal_addr0 = bg_active[2] ? charpal_addr : sprpal_addr;
+  wire [2:0] palbase_index = bg_active[2] ? char_palbase_index : spr_palbase_index;
   assign palbases_addr = palbase_index;
   wire [9:0] pal_addr = pal_addr0 + {palbases_out, 2'b0};
 
@@ -1741,8 +1881,8 @@ module gameduino_main(
 
   wire [13:0] sprimg_readaddr;
 
-  //wire [14:0] pixel_readaddr = comp_workcnt_lt_render_width_plus[1] ? (chars_readaddr >> 2) + {chr_base, 8'b0} : sprimg_readaddr + {sprimg_base, 8'b0};
-  wire [14:0] pixel_readaddr = comp_workcnt_lt_render_width_plus[1] ? (chars_readaddr >> 2) + {chr_base, 8'b0} : sprimg_readaddr;
+  //wire [14:0] pixel_readaddr = bg_active[1] ? (chars_readaddr >> 2) + {chr_base, 8'b0} : sprimg_readaddr + {sprimg_base, 8'b0};
+  wire [14:0] pixel_readaddr = bg_active[1] ? (chars_readaddr >> 2) + {chr_base, 8'b0} : sprimg_readaddr;
 
   wire en_chr = (mem_addr[14:12] == (MEM_PAGE_ADDR_RAM_CHR >> 1));
   wire [7:0] chars_out;
@@ -1790,12 +1930,14 @@ module gameduino_main(
   wire s2_room;         // Does s2 fifo have room for one entry?
   always @(posedge vga_clk)
   begin
-    if (comp_workcnt == 0) begin
-      s1_count <= 0;
+    if (start_sprite_scan) begin
+      sprite_scan_index <= sprites_base;
+      sprite_scan_active <= 1;
       s1_consider <= 0;
     end else
-      if ((s1_count <= 255) & s2_room) begin
-        s1_count <= s1_count + 1;
+      if (sprite_scan_active & s2_room) begin
+        if (sprite_scan_index[7:0] == sprites_end) sprite_scan_active <= 0;
+        sprite_scan_index <= sprite_scan_index + 1;
         s1_consider <= 1;
       end else begin
         s1_consider <= 0;
@@ -1810,7 +1952,7 @@ module gameduino_main(
   wire s1_valid = s1_consider & s1_visible;
   reg [8:0] s1_id;
   always @(posedge vga_clk)
-    s1_id <= s1_count;
+    s1_id <= sprite_scan_index;
 
   // Stage 2: fifo
   wire [4:0] s2_fullness;
@@ -1840,7 +1982,7 @@ module gameduino_main(
   assign s3_read = (s3_state == 15);
   always @(posedge vga_clk)
   begin
-    if (comp_workcnt_lt_render_width_plus[3])
+    if (!sprite_draw_enabled || bg_active[3])
       s3_state <= 16;
     else if (s3_state == 16) begin
       if (s2_valid) begin
@@ -1873,7 +2015,7 @@ module gameduino_main(
   wire [X_BITS-1:0] s3_sprite_x = sprite_10bit_x ? {s2_out[24], s2_out[8:0]} : {s2_out[8:0] >= 512 - 16, s2_out[8:0]};
 
   wire [X_BITS-1:0] s3_compaddr = s3_sprite_x + s3_state;  
-  wire s3_valid = (s3_state != 16) & (s3_compaddr < render_width);
+  wire s3_valid = (s3_state != 16) && (s3_compaddr >= window_x0) && (s3_compaddr <= window_x1);
   reg [8:0] s3_id;
   reg s3_jk;
   always @(posedge vga_clk)
@@ -1910,6 +2052,8 @@ module gameduino_main(
   end
   wire [15:0] s4_out = sprpal_data;
 
+  assign sprite_draw_active = (sprite_draw_enabled && (sprite_scan_active || s1_consider || s2_valid)) || (s3_state != 16) || s4_valid;
+
   // Common signals for collision and composite
   wire sprite_write = s4_valid & !s4_out[15];  // transparency
 
@@ -1921,10 +2065,10 @@ module gameduino_main(
   // ff is impossible and means empty.
 
   wire coll_scrub = (yy == 0) & (comp_workcnt < 256);
-  wire [X_BITS-1:0] occ_addr = comp_workcnt_lt_render_width_plus[0] ? comp_workcnt : s4_compaddr;
-  wire [8:0] occ_d = comp_workcnt_lt_render_width_plus[0] ? 9'hff : {s4_jk, s4_id[7:0]};
+  wire [X_BITS-1:0] occ_addr = bg_active[0] ? comp_workcnt : s4_compaddr;
+  wire [8:0] occ_d = bg_active[0] ? 9'hff : {s4_jk, s4_id[7:0]};
   wire [8:0] oldocc;
-  wire occ_w = comp_workcnt_lt_render_width_plus[0] | sprite_write;
+  wire occ_w = bg_active[0] | sprite_write;
   ram400x9s occ(.o(oldocc), .a(occ_addr), .d(occ_d), .wclk(vga_clk), .we(occ_w));
   assign coll_d = coll_scrub ? 8'hff : oldocc[7:0];
   assign coll_w_addr = coll_scrub ? comp_workcnt : s4_id[7:0];
@@ -1932,14 +2076,36 @@ module gameduino_main(
   // jkmode=1 and JK's differ, allow write
   wire overwriting = (oldocc[7:0] != 8'hff);
   wire jkpass = (jkmode == 0) | (oldocc[8] ^ s4_jk);
-  assign coll_we = coll_scrub | (!comp_workcnt_lt_render_width_plus[3] & sprite_write & overwriting & jkpass);
+  assign coll_we = coll_scrub | (!bg_active[3] & sprite_write & overwriting & jkpass);
 
   // Composite
 
   wire comp_read = yy[1];   // which block is reading
-  wire [X_BITS-1:0] comp_scanout = (xx >> widen_output) >> 1;
-  wire [X_BITS-1:0] comp_write = comp_workcnt_lt_render_width_plus[3] ? (comp_workcnt - 3) : s4_compaddr;
-  wire comp_part1 = (3 <= comp_workcnt) & comp_workcnt_lt_render_width_plus[3];
+  wire comp_last_read = yy[0];
+
+  //wire [X_BITS-1:0] comp_scanout = (xx >> widen_output) >> 1;
+  reg [X_BITS-1:0] comp_scanout;
+  reg [1:0] comp_scanout_frac;
+  wire inc_comp_scanout = widen_output ? (comp_scanout_frac == 3) : (comp_scanout_frac[0] == 1);
+  reg comp_scanout_updated;
+  always @(posedge vga_clk) begin
+    if (CounterXmaxed) begin
+      comp_scanout <= 0;
+      comp_scanout_updated <= 1;
+      comp_scanout_frac <= 0;
+    end else begin
+      if (inc_comp_scanout) begin
+        comp_scanout <= comp_scanout + 1;
+        comp_scanout_frac <= 0;
+      end else begin
+        comp_scanout_frac <= comp_scanout_frac + 1;
+      end
+      comp_scanout_updated <= inc_comp_scanout; 
+    end
+  end
+
+  wire [X_BITS-1:0] comp_write = bg_active[3] ? comp_workcnt_m3 : s4_compaddr;
+  wire comp_part1 = bg_active[3];
 `ifdef NELLY
   wire [14:0] comp_out0;
   wire [14:0] comp_out1;
@@ -1968,12 +2134,12 @@ module gameduino_main(
   wire [15:0] screenshot_rdHL;
   wire [14:0] comp_out;
   wire [14:0] comp_out_bram;
-  wire composer_we = !ss & (comp_part1 | sprite_write);
-  wire [14:0] comp_in = comp_part1 ? char_final : s4_out; 
+  wire [15:0] comp_in = comp_part1 ? char_final : s4_out; 
+  wire composer_we = !ss && (comp_part1 | sprite_write) && (comp_in[15] == 0);
   // Port A is the write, or read when screenshot is ready
   // Port B is scanout
-  RAMB16_S18_S18
-  composer(
+  RAMB16_S18_S18 #(.WRITE_MODE_B("READ_FIRST"))
+  composer (
     .DIPA(0),
     .DIA(comp_in),
     .WEA(composer_we && !comp_write[9]),
@@ -1984,9 +2150,9 @@ module gameduino_main(
     .SSRA(0),
 
     .DIPB(0),
-    .DIB(0),
-    .WEB(0),
-    .ENB(1),
+    .DIB(bg_color),
+    .WEB(comp_last_read),
+    .ENB(comp_scanout_updated),
     .CLKB(vga_clk),
     .ADDRB({!comp_read, comp_scanout[8:0]}),
     .DOB(comp_out_bram),
@@ -1999,17 +2165,19 @@ module gameduino_main(
     reg [14:0] comp_out_d;
     (* ram_style = "distributed" *) reg [14:0] composer_2a[0:127];
     (* ram_style = "distributed" *) reg [14:0] composer_2b[0:127];
-    wire composer_2_we = composer_we && comp_write[9];
-    wire [6:0] comp_2a_addr =  comp_read ? comp_scanout : comp_write; 
-    wire [6:0] comp_2b_addr = !comp_read ? comp_scanout : comp_write; 
+    wire composer_2_we = composer_we && comp_write[9] && (comp_write[8:7] == 0);
+    wire composer_2_erase_we = !comp_scanout_updated && comp_last_read && comp_scanout[9]; 
+    wire [6:0] comp_2a_addr =  comp_read ? comp_scanout        : comp_write; 
+    wire [14:0] comp_2a_in =   comp_read ? bg_color            : comp_in;
+    wire comp_2a_we =          comp_read ? composer_2_erase_we : composer_2_we;  
+    wire [6:0] comp_2b_addr = !comp_read ? comp_scanout        : comp_write;
+    wire [14:0] comp_2b_in =  !comp_read ? bg_color            : comp_in;
+    wire comp_2b_we =         !comp_read ? composer_2_erase_we : composer_2_we;  
     always @(posedge vga_clk) begin
-      if (comp_read == 0) begin
-        if (composer_2_we) composer_2a[comp_2a_addr] <= comp_in;
-        comp_out_d <= composer_2b[comp_2b_addr];
-      end else begin
-        if (composer_2_we) composer_2b[comp_2b_addr] <= comp_in;
-        comp_out_d <= composer_2a[comp_2a_addr];
-      end
+      if (comp_2a_we) composer_2a[comp_2a_addr] <= comp_2a_in;
+      if (comp_2b_we) composer_2b[comp_2b_addr] <= comp_2b_in;
+
+      if (comp_scanout_updated) comp_out_d <= comp_read ? composer_2a[comp_2a_addr] : composer_2b[comp_2b_addr];
     end
 
     reg _comp_scanout9;
@@ -2026,7 +2194,7 @@ module gameduino_main(
 
   // Figure out from above signals when composite completes
   // by detecting pipeline idle
-  wire composite_complete = !comp_workcnt_lt_render_width_plus[4] & (s1_count == 256) & !s1_consider & !s2_valid & (s3_state == 16) & !s4_valid;
+  wire composite_complete = !bg_active[0] && !bg_active[4] && !sprite_draw_active;
 
   // Signal generation
 
@@ -2292,10 +2460,12 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
 
   wire [0:7] j1_mem_dout_be = j1_mem_dout;
 
+  wire [4:0] local_j1_addr = {j1_mem_addr[4:1], 1'b0};
+  wire local_j1_we = j1_wr && (j1_mem_addr[15] == 1);  
   always @(posedge vga_clk)
   begin
-    if (j1_wr & (j1_mem_addr[15] == 1))
-      case ({j1_mem_addr[4:1], 1'b0})
+    if (local_j1_we)
+      case (local_j1_addr)
       // 5'h06: icap_i <= j1_mem_dout;
       // 5'h08: icap_write <= j1_mem_dout;
       // 5'h0a: icap_ce <= j1_mem_dout;
@@ -2308,19 +2478,37 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
       5'h18: j1_flashMOSI <= j1_mem_dout;
       5'h1a: j1_flashSCK <= j1_mem_dout;
       5'h1c: j1_flashSSEL <= j1_mem_dout;
+      // 5'h1e: j1_draw_control_reg, see below
       endcase
   end
+  reg [3:0] j1_draw_control_reg = 0;
+  always @(posedge vga_clk) begin
+    if (local_j1_we && (local_j1_addr == 5'h1e)) begin
+      j1_draw_control_reg <= j1_mem_dout;
+    end else begin
+      j1_draw_control_reg[0] <= 0; // j1_start_draw is a strobe
+      if (composite_complete && !j1_start_draw) j1_draw_control_reg[1] <= 0; // wait for drawing finished
+      if (start_draw_line) j1_draw_control_reg[2] <= 0; // wait for new line
+      if (frame_finish) j1_draw_control_reg[3] <= 0; // wait for frame finished
+    end
+  end
+  assign j1_start_draw = j1_draw_control_reg[0];
+  wire j1_wait = |j1_draw_control_reg[3:1];
 
   assign j1_mem_wr = j1_wr & (j1_mem_addr[15] == 0);
+  wire j1_pause = host_busy || (busyhh != 0) || j1_wait;
+  wire j1_wr_out;
+  assign j1_wr = j1_wr_out && !j1_pause; 
+
   j0 j(.sys_clk_i(vga_clk),
        .sys_rst_i(j1_reset),
        .insn(j1_insn),
        .insn_addr(j1_insn_addr),
-       .mem_wr(j1_wr),
+       .mem_wr(j1_wr_out),
        .mem_addr(j1_mem_addr),
        .mem_dout(j1_mem_dout),
        .mem_din(j1_mem_addr[15] ? local_j1_read : mem_data_rd),
-       .pause(host_busy | (busyhh != 0))
+       .pause(j1_pause)
        );
 
   // 0x2b00: j1 insn RAM
