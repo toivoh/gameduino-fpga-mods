@@ -4,12 +4,12 @@ The original Gameduino has space for 1024 palette colors for tiles (and 1024 for
 
 Apart from the new attribute mode (with two bytes per tile map entry), the mod
 - changes `RAM_PAL` from storing tile palette data into extra tile map storage, for a total of 6 kB
-- makes the tiles read palette data from `RAM_SPRPAL` (just as in [my original attempt at an attribute map](../attrmap/))
+- makes the tiles read palette data from `RAM_SPRPAL` (just as in [my original attempt at an attribute map](../../attrmap/))
 - adds support for more tile map sizes, to make use of the available tile map memory
 
 A short demo video can be found at https://youtu.be/RMPqGM-1orw
 
-This mod is written on top of the [sprite palettes mod](../sprite_palettes/). It is built on the features of the [512 tiles mod](../512_tiles/), which unifies the tile and sprite graphics RAMs to be able to display more than 256 simultaneous tiles (and adds the ninth bit interface used for the extra attribute bits).
+This mod is written on top of the [sprite palettes mod](../../sprite_palettes/). It is built on the features of the [512 tiles mod](../../512_tiles/), which unifies the tile and sprite graphics RAMs to be able to display more than 256 simultaneous tiles (and adds the ninth bit interface used for the extra attribute bits).
 
 New registers
 -------------
@@ -28,7 +28,7 @@ When attribute mode is enabled, the format of a tile map entry is
 
     ee pppppptt tttttttt
 
-with two ninth bits `ee` (see the [512 tiles mod](../512_tiles/)) and two bytes. This contains a 10 bit tile index `tttttttttt` and an 8 bit palette index `eepppppp`.
+with two ninth bits `ee` (see the [512 tiles mod](../../512_tiles/)) and two bytes. This contains a 10 bit tile index `tttttttttt` and an 8 bit palette index `eepppppp`.
 (The tile map entry format is updated in [version 2](v2/).)
 The color index of a tile pixel is computed as
 
@@ -84,7 +84,7 @@ Initial state
 The initial contents of the Gameduino's RAMs and registers are set up to display the Gameduino splash screen, which uses 16 color sprites (with a single palette) for most of the logo, and tiles for the rest.
 This mod makes some changes to preserve the appearance of the splash screen despite the fact that tiles and sprites now share palette space:
 - The initial contents of `RAM_SPRPAL` are now the original initial contents of `RAM_PAL`, except for that the sprite palette has been put into the last 16 colors (which were unused)
-- The initial value of `SPR_PALBASE_16` (see the [sprite palettes mod](../sprite_palettes/)) is set to 252, to make the logo sprites use the sprite palette starting at `252*4 = 1008 = 1024 - 16`
+- The initial value of `SPR_PALBASE_16` (see the [sprite palettes mod](../../sprite_palettes/)) is set to 252, to make the logo sprites use the sprite palette starting at `252*4 = 1008 = 1024 - 16`
 
 Additional options
 ------------------
