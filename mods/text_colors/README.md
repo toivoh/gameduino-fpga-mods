@@ -7,7 +7,8 @@ This mod is built on the [tile attribute map mod](../tile_attr_map/). It provide
 The mod doesn't really make anything possible that wasn't possible before, but it allows to use (colored) text while consuming less graphics memory and much fewer palette entries.
 
 New registers:
-- `CHR_TEXT_MODE_MASK (0x28c4)`: tile index bits `[8:6]` (out of `[9:0]`) are used as an index into `CHR_TEXT_MODE_MASK` to see if the tile is in text color mode
+- `CHR_TEXT_MODE_MASK (0x28c4)`: tile index bits `[7:5]` (out of `[9:0]`) are used as an index into `CHR_TEXT_MODE_MASK` to see if the tile is in text color mode
+    - Tiles with index bit `[8]` set are never in text color mode
 - `CHR_PALBASE_FG (0x28d4)`: The 16 color text foreground color palette starts at index `CHR_PALBASE_FG*4` in the palette
 - `CHR_PALBASE_BG (0x28d5)`: The 16 color text background color palette starts at index `CHR_PALBASE_BG*4` in the palette
 - `SPR_PALBASE_256 (0x28d3)`: The 256 color sprite palettes start at index `SPR_PALBASE_256*4`. (This register came as a bonus with a new implementation of palette base registers.)
@@ -28,3 +29,13 @@ To set the two extra tile id bits, write them into `NINTH_WRITE (0x28c9)`, and t
 The mod can be seen in action at https://youtu.be/uFLW1hp1pBA
 
 The mod makes a new implementation of the palette base registers `SPR_PALBASE_4`, `SPR_PALBASE_16`, etc, (first introduced in the [sprite palettes mod](../sprite_palettes/)). Instead of flip flops, they are now stored in a small distributed RAM. This not only saves logic resources, but makes up to 16 different palette base registers available at almost no additional cost. With the current mod, a total of 6 of these are used.
+
+Version history
+---------------
+- v1: Initial version (in this directory)
+- [v2/](v2/):
+    - Change `CHR_TEXT_MODE_MASK` to specify blocks of 32 tile ids from 0-255, instead of blocks of 64 from 0-511
+        - Add option `TEXT_MODE_TILES_BIG_CHUNKS` (default off) to keep the v1 behavior
+    - Implement the palbase registers using explicit distributed RAM primitives through new module `ram16x8d_init`
+        - Fixes bug with initialization
+    - Based on v3 of [mods/tile_attr_map](../tile_attr_map), with further bug fixes
