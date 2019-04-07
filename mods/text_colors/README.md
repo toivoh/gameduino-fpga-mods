@@ -1,6 +1,6 @@
 Mod: Text colors
 ================
-This mod is built on the [tile attribute map mod](../tile_attr_map/v2). It provides a way to make some tile ids behave as text characters, where
+This mod is built on the [tile attribute map mod](../tile_attr_map/). It provides a way to make some tile ids behave as text characters, where
 - the attribute byte can be used to select between 16 different foreground colors and 16 (possibly different) background colors, and
 - two 1 bpp tile bitmaps are stored in the same 2 bpp tile graphic.
 
@@ -21,7 +21,7 @@ If `CHR_TEXT_MODE_MASK` indicates that a tile is in text color mode,
 
 Otherwise, the tile is treated as in the previous mod.
 
-The text color feature is mostly useful in attribute mode (see the [tile attribute map mod](../tile_attr_map/v2)). To use it, set some bits in `CHR_TEXT_MODE_MASK` to enable text color mode for some tile ids. Bit 0 controls tile ids 0-63, bit 1 ids 64-127, etc.
+The text color feature is mostly useful in attribute mode (see the [tile attribute map mod](../tile_attr_map/)). To use it, set some bits in `CHR_TEXT_MODE_MASK` to enable text color mode for some tile ids. Bit 0 controls tile ids 0-63, bit 1 ids 64-127, etc.
 
 To set the two extra tile id bits, write them into `NINTH_WRITE (0x28c9)`, and then write the tile id byte followed by the attribute byte to the tile map. (For more about ninth bits, see [512 tiles mod](../512_tiles/))
 

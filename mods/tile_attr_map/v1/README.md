@@ -94,5 +94,4 @@ The mod also introduces two synthesis time options:
 
 Version history
 ---------------
-- Original mod in this directory, updates in `v2/`
-- [`v2/`](v2/): Change the tile map entry attribute format to `tt pppppppp tttttttt`, with the option `ATTR_NINTH_PAL_BITS=1` to change it back
+Further updates in [mods/tile_attr_map/](..)

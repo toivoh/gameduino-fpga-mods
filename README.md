@@ -19,7 +19,7 @@ This repository is focussed on the Gameduino FPGA code, and making it usable in 
 - some modifications of the orignal code intended to make it easier to reuse, [described here](restructured/README.md) (code in the `restructured/` directory), and
 - Gameduino mods:
     - one that demonstrates how one can unify the tile and sprite palettes to make room for an attribute map with 4 bits per tile position (see [mods/attrmap/](mods/attrmap/))
-        - a reworked version with one attribute byte per tile position (see [mods/tile_attr_map/v2/](mods/tile_attr_map/v2/))
+        - a reworked version with one attribute byte per tile position (see [mods/tile_attr_map/](mods/tile_attr_map/))
         - a follow-up that adds a text color mode to select independently between foreground and background colors for text (see [mods/text_colors/](mods/text_colors/))
     - one that adds additional video modes (see [mods/video_modes/](mods/video_modes/))
     - one that allows to use 512 simultaneous background tiles instead of 256 (see [mods/512_tiles/](mods/512_tiles/))
