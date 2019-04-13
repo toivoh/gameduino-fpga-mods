@@ -1,6 +1,6 @@
 Mod: Draw Control and Multi-layered Rendering
 =============================================
-This mod adds a number of features that allow the host CPU, and even more the j1 coprocessor, to control what the Gameduino draws into the line buffer (and thus, what is displayed on screen).
+This mod adds a number of features that allow the host CPU, and even more the j1 coprocessor, to control what the Gameduino draws into the line buffer (and thus, what is displayed on screen). The mod also includes some optimizations to save FPGA resources.
 
 New registers:
 - `DRAW_MODE (0x280d)`: (replaces and extends `SPR_DISABLE`, which was at `0x280a`)
@@ -33,7 +33,7 @@ With these additions, the j1 coprocessor can make the Gameduino take several pas
     - draw to different spans of x coordinates
 - The `DRAW_MODE` register can be used to set up a sprite-only or tile-only draw pass
 
-This mod is based on v2 of the [text colors mod](../text_colors/).
+This mod is based on v2 of the [text colors mod](../text_colors/) and `j0.v` from [bugfixes/j0/](../../bugfixes/j0/).
 
 There's a video at https://youtu.be/CsM6kae2PVE that demonstrates a few of the things that can be done with the mod.
 
@@ -55,3 +55,22 @@ and those are used for initial values of both flip flops and distributed RAM.
 
 In this mod, the registers in the `0x2804 - 0x281d` and `0x28c0 - 0x28c7` memory ranges are shadowed; the former in a new distributed 32x8 bit RAM `shadow1_regs`,
 the latter in the top half of the `palbases` RAM (the bottom part is used for the `SPR_PALBASE_4` - `CHR_PALBASE_BG` registers in the `0x28d0` - `0x28d7` range).
+
+Single ported `J1_CODE` RAM
+---------------------------
+The existing implementation of the `J1_CODE` RAM (which holds instructions for the j1 coprocessor) used dual ported distributed RAM,
+which generally takes twice as much resources as single ported distributed RAM.
+But the only time that the two ports were used at the same time was when the j1 coprocessor was accessing its own RAM, probably not a performance critical case.
+
+This mod includes an option `USE_SINGLE_PORTED_CODE_RAM` (default on) to implement `J1_CODE` in single ported RAM instead.
+To be able to do this, j1 instructions that write to `J1_CODE` now take an additional cycle.
+Read instructions also take 2 cycles, but that has been the case since the bug fixes in [bugfixes/j0/](../../bugfixes/j0/).
+
+There's also some more bookkeeping needed to keep track of who gets to access `J1_CODE` in a given cycle, and who is waiting to do so.
+The patch takes the opportunity to clean up the existing the existing j1 read bug fix as well, by implementing most of it in `top.v` instead of `j0.v`,
+and just letting j1 signal when it wants to do a memory read.
+
+Version history
+---------------
+- v1: Initial version (in this directory)
+- [v2/](v2/): Add optimization to reduce resource usage for the `J1_CODE` RAM
