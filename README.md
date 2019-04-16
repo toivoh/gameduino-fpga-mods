@@ -25,6 +25,7 @@ This repository is focussed on the Gameduino FPGA code, and making it usable in 
     - one that allows to use 512 simultaneous background tiles instead of 256 (see [mods/512_tiles/](mods/512_tiles/))
     - one that allows 4/16 color sprites to use many more palettes, sharing the main sprite palette between all sprites (see [mods/sprite_palettes/](mods/sprite_palettes/))
     - one that adds more control of the Gameduino's drawing, allowing to create multi layer and raster interrupt like effects using the j1 coprocessor (see [mods/draw_control/](mods/draw_control/))
+    - one that adds a set of blending modes for blending pixels that are being drawn with the background behind them (see [mods/blending/](mods/blending/))
 - bug fixes for the Gameduino's j0 coprocessor (see [bugfixes/j0/](bugfixes/j0/))
 
 The copy that I used as a basis for this repository was taken from [https://github.com/Godzil/gameduino].
