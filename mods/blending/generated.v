@@ -1820,15 +1820,15 @@ endmodule
 
 
 module RAM_SPRPAL (
-    input [7:0] DIA,
-    output [7:0] DOA,
+    input [8:0] DIA,
+    output [8:0] DOA,
     input WEA,
     input ENA,
     input CLKA,
     input SSRA,
     input [10:0] ADDRA,
-    input [15:0] DIB,
-    output [15:0] DOB,
+    input [17:0] DIB,
+    output [17:0] DOB,
     input WEB,
     input ENB,
     input CLKB,
@@ -1902,22 +1902,24 @@ module RAM_SPRPAL (
       .INIT_3E(256'h0000000000000000000000000000000000000000000000000000000000000000),
       .INIT_3F(256'h8000000008420c64108614a820e9292a2d6b2dad2e1032943ed253326f767bde) // Gameduino logo 16 color palette
     ) ram (
-      .DIPA(0),
-      .DIA(DIA),
+      .DIPA(DIA[8]),
+      .DIA(DIA[7:0]),
       .WEA(WEA),
       .ENA(ENA),
       .CLKA(CLKA),
       .ADDRA(ADDRA),
-      .DOA(DOA),
+      .DOPA(DOA[8]),
+      .DOA(DOA[7:0]),
       .SSRA(SSRA),
 
-      .DIPB(0),
-      .DIB(DIB),
+      .DIPB(DIB[17:16]),
+      .DIB(DIB[15:0]),
       .WEB(WEB),
       .ENB(ENB),
       .CLKB(CLKB),
       .ADDRB(ADDRB),
-      .DOB(DOB),
+      .DOPB(DOB[17:16]),
+      .DOB(DOB[15:0]),
       .SSRB(SSRB)
       );
 

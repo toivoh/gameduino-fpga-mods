@@ -937,6 +937,87 @@ module top(
     assign vga_vsync_n = !vga_vsync;
 endmodule
 
+module blender_channel(
+        input [4:0] fg, bg,
+        input [2:0] alpha,
+        input dir, multiply,
+        output [4:0] blend,
+        output fg_zero
+    );
+    // Calculate
+    //    dot = (alpha*bg + 4*fg) >> 2, if dir = 0
+    //    dot =  bg - fg,               if dir = 1 (and alpha == 4)
+    wire signed [3:0] sign = dir ? -4 : 4;
+    wire signed [13:0] factor1 = {sign, 5'b0, bg}; 
+    wire signed [13:0] factor2 = {alpha, 5'b0, fg};
+    wire signed [18:0] product = factor1 * factor2;
+    wire signed [6:0] dot = product >> 12; // (sign*fg + alpha*bg) >> 2
+
+    // Calculate
+    //    dot2 =                   fg_ext*bg  >> 5, if dir = 0
+    //    dot2 = (32*(32-fg_ext) + fg_ext*bg) >> 5, if dir = 1 (32*32 >> 5 == 0 for dot2, so leave out that term)
+    assign fg_zero = (fg == 0);
+    wire [5:0] fg_ext = {fg_zero, fg}; // Make fg = 0 act as fg = 32 for multiplication
+    wire signed [7:0] mul2 = dir ? -32 : 0;
+    wire signed [17:0] factor3 = {mul2, 5'b0, bg}; 
+    wire signed [17:0] factor4 = {fg_ext, 4'b0, fg_ext};
+    wire [19:0] product2 = factor3 * factor4; // (mul2*fg_ext + fg_ext*bg) >> 5
+    wire [4:0] dot2 = product2 >> 15;
+
+    // clamp to 0 .. 31, or use dot2 if mul_mode
+    //wire [1:0] sel = multiply ? 2'b10 : {dot[6], dot[5] || dot[6]};
+    //assign blend = sel[1] ? (sel[0] ? 0 : dot2) : (sel[0] ? 31 : dot[4:0]);
+
+    // Calculate
+    //    blend = saturate(0, dot, 31), if multiply = 0 
+    //    blend = dot2,                 if multiply = 1
+
+    // Put keep = "true" on sel to make the blend multiplexer take only one LUT per output bit
+    (* keep = "true" *) wire [1:0] sel = multiply ? 2'b00 : (dot[6] ? 2'b10 : (dot[5] ? 2'b11 : 2'b01) );
+    // Use one LUT per bit to multiplex between 0, 31, dot, dot2 (function of four inputs: sel, and corresponding bit from dot and dot2)
+    assign blend = sel[1] ? {5{sel[0]}} : (sel[0] ? dot[4:0] : dot2);
+endmodule
+
+module blender(
+        input [14:0] fg, bg,
+        input [2:0] alpha,
+        input enable_additive_blend,
+        output [14:0] blend,
+        output we, needs_bg
+    );
+    /*
+    Blend function depends on alpha: (Add is a special case of Alpha blend)
+
+        alpha = 0 .. 4: Alpha blend,    blend_r = (alpha*bg_r + 4*fg_r) >> 2  (saturated to <= 31)
+        alpha =      4: Add             blend_r = bg_r + fg_r                 (saturated to <= 31)
+        alpha =      5: Subtract,       blend_r = bg_r - fg_r                 (saturated to >=  0)
+        alpha =      6: Darken          blend_r =  fg_ext_r*bg_r >> 5
+        alpha =      7: Brighten        blend_r = (fg_ext_r*bg_r + 32*(32 - fg_ext_r)) >> 5        
+
+    etc per channel r, g, b, where
+
+        fg_ext_r = 32,   if fg_r == 0
+        fg_ext_r = fg_r, otherwise
+
+    so that the darken and brighten modes can have an fg_r value that lets bg_r through, etc.
+
+    If !enable_additive_blend, alpha = 4 always means transparent.
+    */
+
+    wire dir = alpha[2] & alpha[0];
+    //wire [2:0] eff_alpha = alpha[2] ? 4 : alpha[1:0];
+    wire [2:0] eff_alpha = {alpha[2:1], alpha[0] && !alpha[2]}; // Don't care about eff_alpha when alpha = 6 or 7
+    wire multiply = alpha[2] && alpha[1];
+
+    wire [2:0] fgz;
+    blender_channel blender_r(.fg(fg[14:10]), .bg(bg[14:10]), .alpha(eff_alpha), .dir(dir), .multiply(multiply), .blend(blend[14:10]), .fg_zero(fgz[2]));
+    blender_channel blender_g(.fg(fg[ 9: 5]), .bg(bg[ 9: 5]), .alpha(eff_alpha), .dir(dir), .multiply(multiply), .blend(blend[ 9: 5]), .fg_zero(fgz[1]));
+    blender_channel blender_b(.fg(fg[ 4: 0]), .bg(bg[ 4: 0]), .alpha(eff_alpha), .dir(dir), .multiply(multiply), .blend(blend[ 4: 0]), .fg_zero(fgz[0]));
+
+    assign needs_bg = (alpha != 0);
+    assign we = !(alpha == 4 && ((&fgz) || !enable_additive_blend)); // Update pixel unless (alpha == 4 && (fg == 0 || !enable_additive_blend))
+endmodule
+
 module gameduino_main(
   input vga_clk, // Twice the frequency of the original clka board clock
   output [2:0] vga_red,
@@ -995,6 +1076,9 @@ module gameduino_main(
 // Makes j1 writes to code RAM take an additional cycle.
 // Unlike the original implementation, the single port RAM is currently initialized with zeros.
 `define USE_SINGLE_PORTED_CODE_RAM
+
+// Include support for blending modes for blending pixels into the the line buffer -- see the blender module for documentation
+`define USE_BLENDING
 
 `ifdef USE_AUDIO
 `define USE_PCM_AUDIO
@@ -1107,7 +1191,7 @@ module gameduino_main(
   wire [7:0] mem_data_rd1;
   wire [8:0] mem_data_rd2; // pal = last part of picture
   wire [8:0] mem_data_rd3; // sprval
-  wire [7:0] mem_data_rd4;
+  wire [8:0] mem_data_rd4; // sprpal
   wire [7:0] mem_data_rd5;
 
   // ninth bit access registers
@@ -1194,10 +1278,13 @@ module gameduino_main(
   wire pic_with_attr = 1;
 `endif  
 
-  reg [2:0] draw_mode;
+  reg [7:0] draw_mode;
   wire spr_disable = draw_mode[0]; 
   wire bg_disable = draw_mode[1];
   wire sprites_behind_bg = draw_mode[2];
+`ifdef USE_BLENDING
+  wire enable_additive_blend = draw_mode[7];
+`endif
 
   reg [X_BITS-1:0] window_x0 = 0; // Should be < render_width
   reg [X_BITS-1:0] window_x1 = INITIAL_WINDOW_X1; // Should be >= window_x0
@@ -1281,10 +1368,13 @@ module gameduino_main(
       frames <= frames + 1;
   end
 
+  // When low, the pixel pipeline is paused
+  wire pipe_en;
+
   // Is background drawing active (in a given pipeline stage)
   // bg_active[0] is the state, bg_active[n] is n cycles delayed (for pipelining)
   reg [4:0] bg_active = 0; // TODO: how many bits?
-  always @(posedge vga_clk) bg_active[4:1] <= bg_active[3:0];
+  always @(posedge vga_clk) if (pipe_en) bg_active[4:1] <= bg_active[3:0];
   // Do we want to start drawing sprites as soon as the background drawing is done?
   reg sprite_draw_enabled = 0;
   wire sprite_draw_active; // is any part of the sprite pipeline currently active?
@@ -1294,10 +1384,10 @@ module gameduino_main(
   wire [12:0] comp_workcnt_plus_1 = comp_workcnt + 1;
   
   reg [12:0] comp_workcnt_m1, comp_workcnt_m2, comp_workcnt_m3; // Delay chain for later stages
-  always @(posedge vga_clk) begin  comp_workcnt_m3 <= comp_workcnt_m2; comp_workcnt_m2 <= comp_workcnt_m1; comp_workcnt_m1 <= comp_workcnt;  end
+  always @(posedge vga_clk) if (pipe_en) begin  comp_workcnt_m3 <= comp_workcnt_m2; comp_workcnt_m2 <= comp_workcnt_m1; comp_workcnt_m1 <= comp_workcnt;  end
 
   // When one of these goes high, it's ok to start a new rendering activity in the next cycle
-  wire bg_draw_finish = bg_active[0] && (comp_workcnt_plus_1 >= render_width || comp_workcnt == window_x1);
+  wire bg_draw_finish = bg_active[0] && pipe_en && (comp_workcnt_plus_1 >= render_width || comp_workcnt == window_x1);
   wire sprite_draw_finish = sprite_draw_enabled && !sprite_draw_active;
 
   wire j1_start_draw;
@@ -1320,7 +1410,7 @@ module gameduino_main(
       comp_workcnt <= window_x0;
       bg_active[0] <= 1;
     end else if (bg_active[0]) begin
-      comp_workcnt <= comp_workcnt_plus_1;
+      if (pipe_en) comp_workcnt <= comp_workcnt_plus_1;
       if (bg_draw_finish) bg_active[0] <= 0;
     end
   end
@@ -1386,7 +1476,7 @@ module gameduino_main(
   wire [12:0] picaddr = pic_row_x_pic_width + pic_col + (pic_base << 9);
 
   reg _picaddr0;
-  always @(posedge vga_clk) _picaddr0 <= picaddr;  
+  always @(posedge vga_clk) if (pipe_en) _picaddr0 <= picaddr;  
 
   wire en_pic = (mem_addr[14:12] == (MEM_PAGE_ADDR_RAM_PIC >> 1));
   wire [17:0] pic_out, pic_out1, pic_out2;
@@ -1398,7 +1488,7 @@ module gameduino_main(
     .dib(0),
 	 .dob(pic_out1),
 	 .web(0),
-	 .enb(1),
+	 .enb(pipe_en),
 	 .clkb(vga_clk),
 	 .addrb(picaddr_final),
     .dia(mem_data_wr),
@@ -1424,7 +1514,7 @@ module gameduino_main(
     .DIPB(0),
     .DIB(0),
     .WEB(0),
-    .ENB(1),
+    .ENB(pipe_en),
     .CLKB(vga_clk),
     .ADDRB(picaddr_final),
     .DOPB(pic_out2[17:16]),
@@ -1433,15 +1523,14 @@ module gameduino_main(
   );
 
   reg _picaddr_final_msb;
-  always @(posedge vga_clk) _picaddr_final_msb <= picaddr_final[11];
+  always @(posedge vga_clk) if (pipe_en) _picaddr_final_msb <= picaddr_final[11];
 
   assign pic_out = _picaddr_final_msb ? pic_out2 : pic_out1;
 
   assign glyph = pic_with_attr ? (attr_ninths_are_pal_bits ? pic_out[9:0] : {pic_out[17:16], pic_out[7:0]}) : ((_picaddr0 == 0) ? {pic_out[16], pic_out[7:0]} : {pic_out[17], pic_out[15:8]});
 
   reg [2:0] _column;
-  always @(posedge vga_clk)
-    _column = column;
+  always @(posedge vga_clk) if (pipe_en) _column = column;
 
 `ifdef SUPPORT_TEXT_MODE_TILES
   wire is_text_mode_char = TEXT_MODE_TILES_BIG_CHUNKS ? chr_text_mode_mask[glyph[8:6]] : chr_text_mode_mask[glyph[7:5]] && (glyph[8] == 0);
@@ -1457,7 +1546,7 @@ module gameduino_main(
   reg [9:0] _glyph;
   reg [7:0] _attr;
   reg _is_text_mode_char;
-  always @(posedge vga_clk) begin
+  always @(posedge vga_clk) if (pipe_en) begin
     _glyph <= glyph;
     _attr <= attr;
     _is_text_mode_char <= is_text_mode_char;
@@ -1467,7 +1556,7 @@ module gameduino_main(
   wire [4:0] bg_g;
   wire [4:0] bg_b;
 
-  wire [15:0] char_matte;
+  wire [17:0] char_matte;
 
   wire text_char_pixel = charout[_glyph[9]];
   wire [3:0] text_charpal_addr = text_char_pixel ? _attr[3:0] : _attr[7:4];
@@ -1479,7 +1568,7 @@ module gameduino_main(
   // wire [4:0] bg_mix_b = bg_color[4:0]   + char_matte[4:0];
   // wire [14:0] char_final = char_matte[15] ? {bg_mix_r, bg_mix_g, bg_mix_b} : char_matte[14:0];
   // wire [14:0] char_final = char_matte[15] ? bg_color : char_matte[14:0];
-  wire [15:0] char_final = char_matte;
+  wire [17:0] char_final = char_matte;
 
   reg [7:0] mem_data_rd_reg;
 
@@ -1857,7 +1946,7 @@ module gameduino_main(
   );
   wire [9:0] sprpal_addr;
   wire [2:0] spr_palbase_index;
-  wire [15:0] sprpal_data;
+  wire [17:0] sprpal_data;
   wire en_sprpal = (mem_addr[14:11] == 4'b0111);
 
   wire [9:0] pal_addr0 = bg_active[2] ? charpal_addr : sprpal_addr;
@@ -1876,7 +1965,7 @@ module gameduino_main(
 
     .DIB(0),
     .WEB(0),
-    .ENB(1),
+    .ENB(pipe_en),
     .CLKB(vga_clk),
     .ADDRB(pal_addr),
     .DOB(sprpal_data),
@@ -1892,7 +1981,7 @@ module gameduino_main(
   wire en_chr = (mem_addr[14:12] == (MEM_PAGE_ADDR_RAM_CHR >> 1));
   wire [7:0] chars_out;
   RAM_CHR8 chars(
-    .dia(0), .doa(chars_out), .wea(0), .ena(1), .clka(vga_clk), .addra(pixel_readaddr),
+    .dia(0), .doa(chars_out), .wea(0), .ena(pipe_en), .clka(vga_clk), .addra(pixel_readaddr),
     .dib(mem_data_wr), .dob(mem_data_rd1), .web(mem_wr), .enb(en_chr), .clkb(mem_clk), .addrb(mem_addr));
 
   wire [7:0] sprimg_data;
@@ -1910,7 +1999,7 @@ module gameduino_main(
 
     .dib(0),
     .web(0),
-    .enb(1),
+    .enb(pipe_en),
     .clkb(vga_clk),
     .addrb(pixel_readaddr),
     .dob(sprimg_out),
@@ -1919,7 +2008,7 @@ module gameduino_main(
 
   reg [1:0] _chars_readaddr01;
   reg _pixel_readaddr14;
-  always @(posedge vga_clk) begin
+  always @(posedge vga_clk) if (pipe_en) begin
     _chars_readaddr01 <= chars_readaddr[1:0];
     _pixel_readaddr14 <= pixel_readaddr[14];
   end
@@ -1984,9 +2073,8 @@ module gameduino_main(
   reg [3:0] s3_pal_extra;
   reg [2:0] s3_rot;
   reg [35:0] s3_in;
-  assign s3_read = (s3_state == 15);
-  always @(posedge vga_clk)
-  begin
+  assign s3_read = (s3_state == 15) && pipe_en;
+  always @(posedge vga_clk) if (pipe_en) begin
     if (!sprite_draw_enabled || bg_active[3])
       s3_state <= 16;
     else if (s3_state == 16) begin
@@ -2023,8 +2111,7 @@ module gameduino_main(
   wire s3_valid = (s3_state != 16) && (s3_compaddr >= window_x0) && (s3_compaddr <= window_x1);
   reg [8:0] s3_id;
   reg s3_jk;
-  always @(posedge vga_clk)
-  begin
+  always @(posedge vga_clk) if (pipe_en) begin
     s3_id <= s2_out[44:36];
     s3_jk <= s2_out[31];
   end
@@ -2048,14 +2135,13 @@ module gameduino_main(
   assign sprpal_addr = s3_pal[3] ? sprpal_addr_4 : ((s3_pal[3:2] == 0) ? sprpal_addr_256 : sprpal_addr_16);
   assign spr_palbase_index = s3_pal[3] ? 0 : ((s3_pal[3:2] == 0) ? 2 : 1);
 
-  always @(posedge vga_clk)
-  begin
+  always @(posedge vga_clk) if (pipe_en) begin
     s4_compaddr <= s3_compaddr;
     s4_valid <= s3_valid;
     s4_id <= s3_id;
     s4_jk <= s3_jk;
   end
-  wire [15:0] s4_out = sprpal_data;
+  wire [17:0] s4_out = sprpal_data;
 
   assign sprite_draw_active = (sprite_draw_enabled && (sprite_scan_active || s1_consider || s2_valid)) || (s3_state != 16) || s4_valid;
 
@@ -2111,13 +2197,45 @@ module gameduino_main(
 
   wire [X_BITS-1:0] comp_write = bg_active[3] ? comp_workcnt_m3 : s4_compaddr;
   wire comp_part1 = bg_active[3];
+
+  wire fg_pixel_valid = comp_part1 || s4_valid;
+  wire [17:0] fg_pixel = comp_part1 ? char_final : s4_out;
+
+  wire [15:0] bg_pixel; // only used for blending
+`ifdef USE_BLENDING  
+  wire [2:0] alpha = {fg_pixel[15], fg_pixel[17:16]};
+
+  wire [14:0] blend;
+  wire blend_we, blend_needs_bg;
+  blender blender_inst(
+    .fg(fg_pixel), .bg(bg_pixel), .alpha(alpha), .enable_additive_blend(enable_additive_blend),
+    .blend(blend), .we(blend_we), .needs_bg(blend_needs_bg)
+  );
+
+  wire comp_we = fg_pixel_valid && blend_we;
+  wire do_blend = comp_we && blend_needs_bg; 
+
+  reg _pipe_en;
+  always @(posedge vga_clk) _pipe_en <= pipe_en;
+
+  // Stall pipe if fg_pixel should be blended and pipe_en was high last cycle, so that bg_pixel hasn't been read yet 
+  assign pipe_en = !(do_blend && _pipe_en == 1);
+
+  //wire [15:0] comp_in = fg_pixel[15] ? blend : fg_pixel[14:0];
+  wire [15:0] comp_in = blend;
+`else
+  assign pipe_en = 1;
+  wire [15:0] comp_in = fg_pixel;
+  wire comp_we = fg_pixel_valid && !fg_pixel[15];
+`endif  
+
 `ifdef NELLY
   wire [14:0] comp_out0;
   wire [14:0] comp_out1;
   RAMB16_S18_S18 composer(
     .DIPA(0),
-    .DIA(comp_part1 ? char_final : s4_out),
-    .WEA(comp_read == 1 & (comp_part1 | sprite_write)),
+    .DIA(comp_in),
+    .WEA(comp_read == 1 & comp_we),
     .ENA(1),
     .CLKA(vga_clk),
     .ADDRA({1'b0, (comp_read == 0) ? comp_scanout[8:0] : comp_write[8:0]}),
@@ -2125,8 +2243,8 @@ module gameduino_main(
     .SSRA(0),
 
     .DIPB(0),
-    .DIB(comp_part1 ? char_final : s4_out),
-    .WEB(comp_read == 0 & (comp_part1 | sprite_write)),
+    .DIB(comp_in),
+    .WEB(comp_read == 0 & comp_we),
     .ENB(1),
     .CLKB(vga_clk),
     .ADDRB({1'b1, (comp_read == 1) ? comp_scanout[8:0] : comp_write[8:0]}),
@@ -2139,8 +2257,7 @@ module gameduino_main(
   wire [15:0] screenshot_rdHL;
   wire [14:0] comp_out;
   wire [14:0] comp_out_bram;
-  wire [15:0] comp_in = comp_part1 ? char_final : s4_out; 
-  wire composer_we = !ss && (comp_part1 | sprite_write) && (comp_in[15] == 0);
+  wire composer_we = !ss && comp_we && pipe_en;
   // Port A is the write, or read when screenshot is ready
   // Port B is scanout
   RAMB16_S18_S18 #(.WRITE_MODE_B("READ_FIRST"))
@@ -2164,6 +2281,7 @@ module gameduino_main(
     .SSRB(0)
   );
   assign screenshot_rd = mem_r_addr[0] ? screenshot_rdHL[15:8] : screenshot_rdHL[7:0];
+  assign bg_pixel = screenshot_rdHL;
 
   generate
   if (WIDE_LINE_BUFFER) begin
