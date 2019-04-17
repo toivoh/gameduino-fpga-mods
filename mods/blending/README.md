@@ -45,3 +45,9 @@ Each multiplier is used to calculate a sum of products, such as `alpha*bg +- 4*f
 A multiplexer is then used for each color channel to choose between the two multiplier results, and the values 0 and 31 (for saturation).
 
 The mod can be seen in action at https://youtu.be/mhq9uObLlEk
+
+Limitations
+-----------
+In the current implementation, in 640x240 mode, blending only works correctly for the leftmost 512 pixels on the screen (and not for x coordinates 512-639).
+The reason is that the line buffer is implemented differently for these last pixels, and reading of the background pixel wasn't implemented for this part.
+It would be quite straightforward to do, but would take some more logic resources.
