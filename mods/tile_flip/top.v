@@ -1262,6 +1262,8 @@ module gameduino_main(
 
   localparam INITIAL_CHR_BASE = (7 << 12) >> 8;
   localparam [10:0] PALBASES_SHADOW_INDEX_CHR_BASE = 11'h0c0;
+  localparam INITIAL_PALROT_MASK = 8'b11100000;
+  localparam [10:0] PALBASES_SHADOW_INDEX_PALROT_MASK = 11'h0c2;
   localparam INITIAL_CHR_ATTR_MASK = 'hff;
   localparam [10:0] PALBASES_SHADOW_INDEX_CHR_ATTR_MASK = 11'h0c3;
   localparam [10:0] PALBASES_SHADOW_INDEX_ATTR_NINTH_PB = 11'h0c5; // for register attr_ninths_are_pal_bits
@@ -1294,7 +1296,7 @@ module gameduino_main(
   reg [6:0] chr_base = INITIAL_CHR_BASE;
   //reg [6:0] sprimg_base = 0;
 
-  reg [3:0] spr_palrot_mask;
+  reg [7:0] palrot_mask = INITIAL_PALROT_MASK;
 `ifdef SUPPORT_8BIT_RAM_PIC
   reg [7:0] chr_attr_mask = INITIAL_CHR_ATTR_MASK;
 `else
@@ -1331,6 +1333,7 @@ module gameduino_main(
   localparam [127:0] PALBASES_INIT = 
     {INITIAL_SPR_PALBASE_16, {1{8'b0}}} |
     {INITIAL_CHR_BASE,            {(PALBASES_SHADOW_INDEX_CHR_BASE      - 'hc0 + 8){8'b0}}} |
+    {INITIAL_PALROT_MASK,         {(PALBASES_SHADOW_INDEX_PALROT_MASK   - 'hc0 + 8){8'b0}}} |
     {INITIAL_CHR_ATTR_MASK,       {(PALBASES_SHADOW_INDEX_CHR_ATTR_MASK - 'hc0 + 8){8'b0}}} |
     {ATTR_NINTH_PAL_BITS_DEFAULT, {(PALBASES_SHADOW_INDEX_ATTR_NINTH_PB - 'hc0 + 8){8'b0}}};
   ram16x8d_init #(.INIT(PALBASES_INIT)) palbases(
@@ -1538,17 +1541,21 @@ module gameduino_main(
   wire is_text_mode_char = 0; 
 `endif
   wire [9:0] masked_glyph = {glyph[9] && !is_text_mode_char, glyph[8:0]};
-  wire [15:0] chars_readaddr = {masked_glyph, row[2:0], _column[2], ~_column[1:0]};
-  wire [1:0] charout;
 
   wire [7:0] attr = pic_with_attr ? (attr_ninths_are_pal_bits ? pic_out[17:10] : pic_out[15:8]) : glyph & chr_attr_mask;
+
+  wire [2:0] chr_palrot = is_text_mode_char ? 0 : (attr[7:5] & ~palrot_mask[7:5]);
+  wire [2:0] chr_sub_x = (chr_palrot[0] ? row[2:0] : _column[2:0]) ^ {3{chr_palrot[2]}};
+  wire [2:0] chr_sub_y = (chr_palrot[0] ? _column[2:0] : row[2:0]) ^ {3{chr_palrot[1]}};
+  wire [15:0] chars_readaddr = {masked_glyph, chr_sub_y, chr_sub_x ^ 3'b011};
+  wire [1:0] charout;
 
   reg [9:0] _glyph;
   reg [7:0] _attr;
   reg _is_text_mode_char;
   always @(posedge vga_clk) if (pipe_en) begin
     _glyph <= glyph;
-    _attr <= attr;
+    _attr <= is_text_mode_char ? attr : (attr & {palrot_mask[7:5], 5'b11111});
     _is_text_mode_char <= is_text_mode_char;
   end
 
@@ -1722,7 +1729,7 @@ module gameduino_main(
     // Plain rw registers: reads provided as shadow reads by palbases_read below
     11'h0c0: mem_data_rd_reg <= chr_base[6:0];
     //11'h0c1: mem_data_rd_reg <= sprimg_base[6:0];
-    11'h0c2: mem_data_rd_reg <= spr_palrot_mask;
+    PALBASES_SHADOW_INDEX_PALROT_MASK: mem_data_rd_reg <= palrot_mask;
 `ifdef SUPPORT_8BIT_RAM_PIC
     11'h0c3: mem_data_rd_reg <= chr_attr_mask;
 `endif
@@ -1857,7 +1864,7 @@ module gameduino_main(
 
       PALBASES_SHADOW_INDEX_CHR_BASE: chr_base[6:0] <= mem_data_wr;
       //11'h0c1: sprimg_base[6:0]  <= mem_data_wr;
-      11'h0c2: spr_palrot_mask <= mem_data_wr;
+      PALBASES_SHADOW_INDEX_PALROT_MASK: palrot_mask <= mem_data_wr;
 `ifdef SUPPORT_8BIT_RAM_PIC
       PALBASES_SHADOW_INDEX_CHR_ATTR_MASK: chr_attr_mask <= mem_data_wr;
 `endif
@@ -2093,7 +2100,7 @@ module gameduino_main(
   wire [3:0] s3_prev_state = (s3_state == 16) ? 0 : (s3_state + 1);
 
   wire [3:0] s2_pal = s2_out[15:12];
-  wire [2:0] s2_rot = s2_out[11:9] & ~(s2_pal[3] ? spr_palrot_mask[2:0] : ((s2_pal[3:2] == 0) ? 0 : spr_palrot_mask[3]));
+  wire [2:0] s2_rot = s2_out[11:9] & ~(s2_pal[3] ? palrot_mask[2:0] : ((s2_pal[3:2] == 0) ? 0 : palrot_mask[3]));
 
   wire s2_flip_d = s2_rot[0];
   wire s2_flip_x = ROT_FORMAT_HVD ? s2_rot[2] : s2_rot[1];
@@ -2129,8 +2136,8 @@ module gameduino_main(
   wire [1:0] subfield2 = s3_pal[2] ? (s3_pal[1] ? s3_out[7:6] : s3_out[5:4]) : (s3_pal[1] ? s3_out[3:2] : s3_out[1:0]);
 
   wire [9:0] sprpal_addr_256 = {s3_pal[1:0], s3_out} + {s3_pal_extra, 4'b0000};
-  wire [9:0] sprpal_addr_16  = {s3_rot[0] & spr_palrot_mask[3], s3_pal_extra, s3_pal[0], subfield4};
-  wire [9:0] sprpal_addr_4   = {s3_rot & spr_palrot_mask[2:0],  s3_pal_extra, s3_pal[0], subfield2};
+  wire [9:0] sprpal_addr_16  = {s3_rot[0] & palrot_mask[3], s3_pal_extra, s3_pal[0], subfield4};
+  wire [9:0] sprpal_addr_4   = {s3_rot & palrot_mask[2:0],  s3_pal_extra, s3_pal[0], subfield2};
 
   assign sprpal_addr = s3_pal[3] ? sprpal_addr_4 : ((s3_pal[3:2] == 0) ? sprpal_addr_256 : sprpal_addr_16);
   assign spr_palbase_index = s3_pal[3] ? 0 : ((s3_pal[3:2] == 0) ? 2 : 1);
