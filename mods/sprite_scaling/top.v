@@ -1110,6 +1110,9 @@ module gameduino_main(
   // 1: Tile ids 0-511 (and 512-1023) can be used for text mode tiles; the bits in CHR_TEXT_MODE_MASK denote blocks of 64 tile ids
   localparam TEXT_MODE_TILES_BIG_CHUNKS = 0;
 
+  localparam S3_STATE_FRAC_BITS = 2;
+  localparam MAX_SPRITE_WIDTH = 64;
+
 // Constants
 // ---------
 
@@ -1347,6 +1350,8 @@ module gameduino_main(
 `else
   wire attr_ninths_are_pal_bits = ATTR_NINTH_PAL_BITS_DEFAULT;
 `endif 
+
+  reg [7:0] sprite_sizes;
 
   // Generate CounterX and CounterY
   // A single line is 1040 (vga_xtot_minus_1 + 1) clocks.  Line pair is 2080 clocks.
@@ -1739,6 +1744,7 @@ module gameduino_main(
 `ifdef ATTR_NINTH_PAL_BITS_REG
     11'h0c5: mem_data_rd_reg <= attr_ninths_are_pal_bits;
 `endif
+    11'h0c6: mem_data_rd_reg <= sprite_sizes;
 */
 
     11'h0c8: mem_data_rd_reg <= ninth_read_bits;
@@ -1874,6 +1880,7 @@ module gameduino_main(
 `ifdef ATTR_NINTH_PAL_BITS_REG
       PALBASES_SHADOW_INDEX_ATTR_NINTH_PB: attr_ninths_are_pal_bits <= mem_data_wr;
 `endif
+      11'h0c6: sprite_sizes <= mem_data_wr;
 
       //11'h0c8: ninth_read_bits   <= mem_data_wr; // handled below
       11'h0c9: ninth_write_bits  <= mem_data_wr;
@@ -1981,14 +1988,16 @@ module gameduino_main(
   assign char_matte = sprpal_data;
 
   wire [13:0] sprimg_readaddr;
+  wire sprimg_re;
 
   //wire [14:0] pixel_readaddr = bg_active[1] ? (chars_readaddr >> 2) + {chr_base, 8'b0} : sprimg_readaddr + {sprimg_base, 8'b0};
   wire [14:0] pixel_readaddr = bg_active[1] ? (chars_readaddr >> 2) + {chr_base, 8'b0} : sprimg_readaddr;
+  wire pixel_re = bg_active[1] ? 1 : sprimg_re;
 
   wire en_chr = (mem_addr[14:12] == (MEM_PAGE_ADDR_RAM_CHR >> 1));
   wire [7:0] chars_out;
   RAM_CHR8 chars(
-    .dia(0), .doa(chars_out), .wea(0), .ena(pipe_en), .clka(vga_clk), .addra(pixel_readaddr),
+    .dia(0), .doa(chars_out), .wea(0), .ena(pipe_en && pixel_re), .clka(vga_clk), .addra(pixel_readaddr),
     .dib(mem_data_wr), .dob(mem_data_rd1), .web(mem_wr), .enb(en_chr), .clkb(mem_clk), .addrb(mem_addr));
 
   wire [7:0] sprimg_data;
@@ -2006,7 +2015,7 @@ module gameduino_main(
 
     .dib(0),
     .web(0),
-    .enb(pipe_en),
+    .enb(pipe_en && pixel_re),
     .clkb(vga_clk),
     .addrb(pixel_readaddr),
     .dob(sprimg_out),
@@ -2048,19 +2057,30 @@ module gameduino_main(
 
   wire [8:0] s1_sprite_y = sprite_10bit_x ? {s1_out[23:16] >= 256-16, s1_out[23:16]} : s1_out[24:16];
 
-  wire [8:0] s1_y_offset = yy[9:1] - s1_sprite_y;
+  wire s1_size_class = palrot_mask[4] && s1_out[11];
+  wire [1:0] sprite_height_shift = s1_size_class ? sprite_sizes[7:6] : sprite_sizes[3:2];
+  wire signed [8:0] s1_y_offset0 = yy[9:1] - s1_sprite_y;
+  wire signed [8:0] s1_y_offset = sprite_height_shift[1] ? s1_y_offset0 >>> 2 : (sprite_height_shift[0] ? s1_y_offset0 >>> 1 : s1_y_offset0);
+
   wire s1_visible = (spr_disable == 0) & (s1_y_offset[8:4] == 0);
   wire s1_valid = s1_consider & s1_visible;
   reg [8:0] s1_id;
   always @(posedge vga_clk)
     s1_id <= sprite_scan_index;
 
+  // Package data for fifo storage:
+  // - Store s1_y_offset[3:0] in fifo instead of s1_sprite_y.
+  // - Keep s1_sprite_y[8], which becomes s3_sprite_x[9] in 640x240 mode.
+  // - Forward s1_size_class. (We don't need s1_sprite_y[7:0] going forward)
+  // - Filter out rot[2] if we use it for size_class
+  wire [35:0] s1_fifo_in = {s1_out[35:21], s1_size_class, s1_y_offset[3:0], s1_out[15:12], s1_out[11] && !palrot_mask[4], s1_out[10:0]};
+
   // Stage 2: fifo
   wire [4:0] s2_fullness;
   wire s3_read;
   wire [44:0] s2_out;
   fifo #(44) s2(.clk(vga_clk),
-                .wr(s1_valid), .datain({s1_id, s1_out}),
+                .wr(s1_valid), .datain({s1_id, s1_fifo_in}),
                 .rd(s3_read), .dataout(s2_out),
                 .fullness(s2_fullness));
   assign s2_room = (s2_fullness < 14);
@@ -2074,29 +2094,45 @@ module gameduino_main(
     consume s2_out on last cycle 
     out: s3_valid, s3_pal, s3_out, s3_compaddr
   */
-
   reg [4:0] s3_state;
+  reg [S3_STATE_FRAC_BITS-1:0] s3_state_frac;
+
   reg [3:0] s3_pal;
   reg [3:0] s3_pal_extra;
   reg [2:0] s3_rot;
   reg [35:0] s3_in;
-  assign s3_read = (s3_state == 15) && pipe_en;
+  reg [X_BITS-1:0] s3_compaddr;
+
+  wire [X_BITS-1:0] s3_sprite_x;
+  wire s3_size_class = s2_out[20];
+  wire [S3_STATE_FRAC_BITS-1:0] s3_pixel_width_m1 = s3_size_class ? sprite_sizes[5:4] : sprite_sizes[1:0];
+  wire s3_state_advance = (s3_state_frac == s3_pixel_width_m1);
+  assign s3_read = (s3_state == 15) && s3_state_advance && pipe_en;
+
   always @(posedge vga_clk) if (pipe_en) begin
     if (!sprite_draw_enabled || bg_active[3])
       s3_state <= 16;
     else if (s3_state == 16) begin
       if (s2_valid) begin
         s3_state <= 0;
+        s3_state_frac <= 0;
+        s3_compaddr <= s3_sprite_x;
         s3_in <= s2_out;
       end
     end else begin
-      s3_state <= s3_state + 1;
+      if (s3_state_advance) begin
+        s3_state <= s3_state + 1;
+        s3_state_frac <= 0;
+      end else begin
+        s3_state_frac <= s3_state_frac + 1;
+      end
+      s3_compaddr <= s3_compaddr + 1;
     end
     s3_pal <= s2_out[15:12];
     s3_pal_extra <= s2_out[35:32];
     s3_rot <= s2_out[11:9];
   end
-  wire [3:0] s3_yoffset = yy[4:1] - s2_out[19:16];
+  wire [3:0] s3_yoffset = s2_out[19:16];
   wire [3:0] s3_prev_state = (s3_state == 16) ? 0 : (s3_state + 1);
 
   wire [3:0] s2_pal = s2_out[15:12];
@@ -2110,11 +2146,11 @@ module gameduino_main(
   wire [3:0] ready = (s2_flip_d ? s3_prev_state : s3_yoffset) ^ {4{s2_flip_y}};
 
   assign sprimg_readaddr = {s2_out[30:25], ready, readx};
+  assign sprimg_re = (s3_state == 16) || s3_state_advance; // Only read a new sprite pixel when s3_state advances
   wire [7:0] s3_out = sprimg_data;
 
-  wire [X_BITS-1:0] s3_sprite_x = sprite_10bit_x ? {s2_out[24], s2_out[8:0]} : {s2_out[8:0] >= 512 - 16, s2_out[8:0]};
+  assign s3_sprite_x = sprite_10bit_x ? {s2_out[24], s2_out[8:0]} : {s2_out[8:0] >= 512 - MAX_SPRITE_WIDTH, s2_out[8:0]};
 
-  wire [X_BITS-1:0] s3_compaddr = s3_sprite_x + s3_state;  
   wire s3_valid = (s3_state != 16) && (s3_compaddr >= window_x0) && (s3_compaddr <= window_x1);
   reg [8:0] s3_id;
   reg s3_jk;
