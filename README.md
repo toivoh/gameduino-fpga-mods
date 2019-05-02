@@ -27,6 +27,7 @@ This repository is focussed on the Gameduino FPGA code, and making it usable in 
     - one that adds more control of the Gameduino's drawing, allowing to create multi layer and raster interrupt like effects using the j1 coprocessor (see [mods/draw_control/](mods/draw_control/))
     - one that adds a set of blending modes for blending pixels that are being drawn with the background behind them (see [mods/blending/](mods/blending/))
     - one that allows to use some attribute bits to specify tile flipping (see [mods/tile_flip/](mods/tile_flip/))
+    - one that adds sprite (up)scaling (see [mods/sprite_scaling/](mods/sprite_scaling/))
 - bug fixes for the Gameduino's j0 coprocessor (see [bugfixes/j0/](bugfixes/j0/))
 
 The copy that I used as a basis for this repository was taken from [https://github.com/Godzil/gameduino].
