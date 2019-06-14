@@ -854,6 +854,43 @@ begin
 end
 endmodule
 
+module pwm_generator #(parameter BITS = 16, SAMPLE_PERIOD_BITS = 10, WIDTH_BITS = 8) (
+        input clk,
+
+        input signed [BITS-1:0] sample_in_l, sample_in_r,
+
+        output ready,
+        output pwm_l, pwm_r
+    );
+    localparam DITHER_BITS = BITS - WIDTH_BITS;
+
+    reg [BITS-1:0] counter = 0;
+    reg signed [BITS-1:0] sample_l = 0, sample_r = 0;
+
+    wire [BITS-1:0] counter_plus_one = counter + 1;
+    assign ready = counter_plus_one[SAMPLE_PERIOD_BITS] != counter[SAMPLE_PERIOD_BITS];
+    always @(posedge clk) begin
+        if (ready) begin
+            sample_l <= sample_in_l;
+            sample_r <= sample_in_r;
+        end
+
+        counter <= counter_plus_one;
+    end
+
+    wire signed [BITS-1:0] threshold;
+    assign threshold[DITHER_BITS +: WIDTH_BITS] = counter[0 +: WIDTH_BITS];
+    generate
+        genvar k;
+        for (k = 0; k < DITHER_BITS; k = k + 1) begin : bit_reverse
+            assign threshold[k] = counter[BITS-1 - k];
+        end
+    endgenerate
+
+    assign pwm_l = sample_l > threshold; 
+    assign pwm_r = sample_r > threshold; 
+endmodule
+
 module top(
         input clka,
 
@@ -1064,6 +1101,8 @@ module gameduino_main(
 
 // Use FMicrosynth. Don't combine with USE_AUDIO, but with USE_PCM_AUDIO 
 `define USE_FMICROSYNTH
+// Use PWM DAC for audio instead of the default delta-sigma converter
+`define USE_PWM_DAC
 
 // Include the 0x2890 - 0x289f region of the COMM register? (repeated at 0x2880 - 0x288f)
 `define USE_COMM1
@@ -2559,24 +2598,48 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
 `ifdef USE_PCM_AUDIO
 `ifndef USE_AUDIO
   `ifdef USE_FMICROSYNTH
+    `ifndef USE_PWM_DAC
   wire [12:0] lvalue = sample_l[15:3] + fms_sample_l[15:3];
   wire [12:0] rvalue = sample_r[15:3] + fms_sample_r[15:3];
+    `else
+  wire [15:0] lvalue = sample_l + fms_sample_l;
+  wire [15:0] rvalue = sample_r + fms_sample_r;
+    `endif
   `else
+    `ifndef USE_PWM_DAC
   wire [12:0] lvalue = sample_l[15:3];
   wire [12:0] rvalue = sample_r[15:3];
+    `else
+  wire [15:0] lvalue = sample_l;
+  wire [15:0] rvalue = sample_r;
+    `endif
   `endif
 `endif
 `ifdef NELLY
+    `ifndef USE_PWM_DAC
   wire lau_out = lvalue >= dither;
   wire rau_out = rvalue >= dither;
-
+    `else
+  wire lau_out = (lvalue>>3) >= dither;
+  wire rau_out = (rvalue>>3) >= dither;
+    `endif
   assign AUDIOL = lau_out;
   assign AUDIOR = rau_out;
 `else
+  `ifndef USE_PWM_DAC
   wire [12:0] ulvalue = lvalue ^ 4096;
   wire [12:0] urvalue = rvalue ^ 4096;
   dac ldac(AUDIOL, ulvalue, vga_clk, 0);
   dac rdac(AUDIOR, urvalue, vga_clk, 0);
+  `else
+  wire fms_trigger;
+  pwm_generator dac(
+    .clk(vga_clk),
+    .sample_in_l(lvalue), .sample_in_r(rvalue),
+    .ready(fms_trigger),
+    .pwm_l(AUDIOL), .pwm_r(AUDIOR)
+  );
+  `endif
 `endif
 `else // USE_PCM_AUDIO
   assign AUDIOL = 0;
@@ -2784,10 +2847,12 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
   wire fms_wr = mem_wr & fms_addressed;
   wire [3:0] fms_mem_bwe = fms_wr ? {(mem_w_addr[1:0] == 3), (mem_w_addr[1:0] == 2), (mem_w_addr[1:0] == 1), (mem_w_addr[1:0] == 0)} : 0;
 
+  `ifndef USE_PWM_DAC
   reg [9:0] fms_trig_counter = 0;
   wire [10:0] fms_trig_counter_plus_1 = fms_trig_counter + 1; 
   wire fms_trigger = fms_trig_counter_plus_1[10];
   always @(posedge vga_clk) fms_trig_counter <= fms_trig_counter_plus_1;
+  `endif
 
   fmicrosynth fmicrosynth_inst(
     .clk(vga_clk),
