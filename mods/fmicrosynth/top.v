@@ -1062,6 +1062,9 @@ module gameduino_main(
 //`define USE_AUDIO
 `define USE_PCM_AUDIO
 
+// Use FMicrosynth. Don't combine with USE_AUDIO, but with USE_PCM_AUDIO 
+`define USE_FMICROSYNTH
+
 // Include the 0x2890 - 0x289f region of the COMM register? (repeated at 0x2880 - 0x288f)
 `define USE_COMM1
 // Include the 0x28a0 - 0x28bf region of the COMM register?
@@ -1352,6 +1355,12 @@ module gameduino_main(
 `endif 
 
   reg [7:0] sprite_sizes;
+
+`ifdef USE_FMICROSYNTH
+  reg [0:0] fms_control = 1;
+  wire fms_reset = fms_control[0];
+  wire [0:0] fms_status;  
+`endif
 
   // Generate CounterX and CounterY
   // A single line is 1040 (vga_xtot_minus_1 + 1) clocks.  Line pair is 2080 clocks.
@@ -1674,6 +1683,10 @@ module gameduino_main(
     .d(mem_data_wr), .we(mem_wr && shadow1_sel), .wclk(vga_clk), .a(mem_addr[4:0]), .o(shadow1_read)
   );
 
+`ifdef USE_FMICROSYNTH
+  wire [31:0] fms_mem_rdata;
+`endif
+
   always @*
   begin
     casex (mem_r_addr[10:0])
@@ -1755,6 +1768,11 @@ module gameduino_main(
     // 11'h0d0 - 11'h0d7
     11'b00011010xxx: mem_data_rd_reg <= palbases_read;
 
+`ifdef USE_FMICROSYNTH
+    11'h0e0: mem_data_rd_reg <= fms_control;
+    11'h0e1: mem_data_rd_reg <= fms_status;
+`endif
+
     11'b001xxxxxxxx:
       mem_data_rd_reg <= coll_rd ? coll_o : 8'hff;
 `ifdef USE_AUDIO    
@@ -1762,6 +1780,11 @@ module gameduino_main(
     11'b010xxxxxx01: mem_data_rd_reg <= voicefh_read;
     11'b010xxxxxx10: mem_data_rd_reg <= voicela_read;
     11'b010xxxxxx11: mem_data_rd_reg <= voicera_read;
+`elsif USE_FMICROSYNTH
+    11'b010xxxxxx00: mem_data_rd_reg <= fms_mem_rdata[ 0 +: 8];
+    11'b010xxxxxx01: mem_data_rd_reg <= fms_mem_rdata[ 8 +: 8];
+    11'b010xxxxxx10: mem_data_rd_reg <= fms_mem_rdata[16 +: 8];
+    11'b010xxxxxx11: mem_data_rd_reg <= fms_mem_rdata[24 +: 8];
 `endif    
     11'b011xxxxxxx0: mem_data_rd_reg <= j1insnl_read;
     11'b011xxxxxxx1: mem_data_rd_reg <= j1insnh_read;
@@ -1886,6 +1909,9 @@ module gameduino_main(
       11'h0c9: ninth_write_bits  <= mem_data_wr;
 
       // 11'h0d0 - 11'h0d7: in palbases
+`ifdef USE_FMICROSYNTH      
+      11'h0e0: fms_control <= mem_data_wr;
+`endif
       endcase
     end else begin
       // When writing from host to a non-register, ninth_write_bits[0] is used to fill in the 9th bit; shift it out
@@ -2526,10 +2552,19 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
 //                       };
 `endif // USE_AUDIO
 
+`ifdef USE_FMICROSYNTH
+  wire signed [15:0] fms_sample_l, fms_sample_r;
+`endif
+
 `ifdef USE_PCM_AUDIO
 `ifndef USE_AUDIO
+  `ifdef USE_FMICROSYNTH
+  wire [12:0] lvalue = sample_l[15:3] + fms_sample_l[15:3];
+  wire [12:0] rvalue = sample_r[15:3] + fms_sample_r[15:3];
+  `else
   wire [12:0] lvalue = sample_l[15:3];
   wire [12:0] rvalue = sample_r[15:3];
+  `endif
 `endif
 `ifdef NELLY
   wire lau_out = lvalue >= dither;
@@ -2741,4 +2776,28 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
   assign AUX_out = j1_p2_o;
   assign AUX = AUX_tristate ? AUX_in : AUX_out;
 
+`ifdef USE_FMICROSYNTH
+  wire fms_addressed = (mem_addr[14:11] == 5) & (mem_addr[10:8] == 3'b010);
+
+  wire fms_mem_re = fms_addressed && (host_mem_rd || j1_rd);
+
+  wire fms_wr = mem_wr & fms_addressed;
+  wire [3:0] fms_mem_bwe = fms_wr ? {(mem_w_addr[1:0] == 3), (mem_w_addr[1:0] == 2), (mem_w_addr[1:0] == 1), (mem_w_addr[1:0] == 0)} : 0;
+
+  reg [9:0] fms_trig_counter = 0;
+  wire [10:0] fms_trig_counter_plus_1 = fms_trig_counter + 1; 
+  wire fms_trigger = fms_trig_counter_plus_1[10];
+  always @(posedge vga_clk) fms_trig_counter <= fms_trig_counter_plus_1;
+
+  fmicrosynth fmicrosynth_inst(
+    .clk(vga_clk),
+    .reset(fms_reset),
+    .mem_addr(mem_addr >> 2),
+    .mem_re(fms_mem_re), .mem_rd(fms_mem_rdata),  
+    .mem_bwe(fms_mem_bwe), .mem_wd({4{mem_data_wr[7:0]}}),
+    .trigger(fms_trigger),
+    .sample_l(fms_sample_l), .sample_r(fms_sample_r),
+    .running(fms_status)
+  );
+`endif
 endmodule // top
