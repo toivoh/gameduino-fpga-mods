@@ -28,6 +28,7 @@ This repository is focussed on the Gameduino FPGA code, and making it usable in 
     - one that adds a set of blending modes for blending pixels that are being drawn with the background behind them (see [mods/blending/](mods/blending/))
     - one that allows to use some attribute bits to specify tile flipping (see [mods/tile_flip/](mods/tile_flip/))
     - one that adds sprite (up)scaling (see [mods/sprite_scaling/](mods/sprite_scaling/))
+    - one that integrates the [FMicrosynth programmable sound synthesizer](https://github.com/toivoh/fmicrosynth) as an alternative to the Gameduino's additive sound synthesis (see [mods/fmicrosynth/](mods/fmicrosynth/))
 - bug fixes for the Gameduino's j0 coprocessor (see [bugfixes/j0/](bugfixes/j0/))
 
 The copy that I used as a basis for this repository was taken from [https://github.com/Godzil/gameduino].
