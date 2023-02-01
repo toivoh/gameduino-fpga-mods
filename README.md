@@ -39,7 +39,7 @@ The bulk of the Gameduino's FPGA code, including the video pipeline, can be foun
 
 Here, I want to talk a bit about how the Gameduino uses its memory resources, and how the graphics pipeline is built.
 
-A brief introductino to memory resources in FPGAs
+A brief introduction to memory resources in FPGAs
 -------------------------------------------------
 The Gameduino's hdl was written for the XC3S200AN FPGA, and is adapted to the resources that are available there.
 
